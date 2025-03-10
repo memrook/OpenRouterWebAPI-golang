@@ -131,8 +131,8 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	reqBody := DeepseekRequest{
-		Model: "google/gemini-2.0-pro-exp-02-05:free",
-		//Model: "deepseek/deepseek-r1-zero:free",
+		//Model: "google/gemini-2.0-pro-exp-02-05:free",
+		Model: "deepseek/deepseek-r1-zero:free",
 		Messages: []Message{
 			{
 				Role:    "user",
