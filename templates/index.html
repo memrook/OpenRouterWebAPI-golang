@@ -408,13 +408,13 @@
             {{end}}
         </div>
         
-        <form id="chat-form">
+        <form id="chat-form" onsubmit="return false;">
             <div class="input-container">
                 <textarea name="message" 
                          id="message-input"
                          placeholder="Введите ваше сообщение... Поддерживается Markdown, LaTeX (например, $x^2 + y^2 = r^2$) и блоки кода (в ```)" 
                          required></textarea>
-                <button type="submit" class="submit-btn" id="submit-btn">Отправить</button>
+                <button type="button" class="submit-btn" id="submit-btn" onclick="submitMessage()">Отправить</button>
                 <button type="button" class="cancel-btn" id="cancel-btn">Отмена</button>
                 <div class="loading-container">
                     <span>Генерирую</span>
@@ -540,15 +540,13 @@
             if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
                 e.preventDefault();
                 if (!document.getElementById('submit-btn').disabled) {
-                    document.getElementById('chat-form').dispatchEvent(new Event('submit'));
+                    submitMessage();
                 }
             }
         });
 
-        // Обработка отправки формы
-        document.getElementById('chat-form').addEventListener('submit', function(e) {
-            e.preventDefault();
-            
+        // Основная функция отправки сообщения
+        function submitMessage() {
             const submitBtn = document.getElementById('submit-btn');
             const messageInput = document.getElementById('message-input');
             const statusDiv = document.getElementById('status');
@@ -579,7 +577,7 @@
                 // Используем обычный режим
                 handleRegularRequest(message);
             }
-        });
+        }
         
         // Обработка потокового запроса
         function handleStreamingRequest(message) {
