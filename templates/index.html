@@ -42,6 +42,25 @@
         .reset-button:hover {
             background-color: #c82333;
         }
+        .action-buttons {
+            display: flex;
+            gap: 10px;
+        }
+        .stream-toggle {
+            padding: 8px 15px;
+            background-color: #6c757d;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        .stream-toggle.active {
+            background-color: #28a745;
+        }
+        .stream-toggle:hover {
+            opacity: 0.9;
+        }
         .input-container {
             display: flex;
             gap: 10px;
@@ -329,17 +348,50 @@
             margin-top: 5px;
             text-align: right;
         }
+        
+        /* Стиль для кнопки отмены */
+        .cancel-btn {
+            background-color: #dc3545;
+            display: none;
+        }
+        .cancel-btn:hover {
+            background-color: #c82333;
+        }
+        .streaming .cancel-btn {
+            display: inline-block;
+        }
+        .streaming .submit-btn {
+            display: none;
+        }
+        
+        /* Курсор ввода для симуляции набора текста */
+        .cursor-typing {
+            display: inline-block;
+            width: 5px;
+            height: 17px;
+            background-color: #333;
+            margin-left: 2px;
+            animation: blink 1s infinite;
+            vertical-align: middle;
+        }
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0; }
+        }
     </style>
 </head>
 <body>
     <div class="chat-container">
         <div class="header-container">
             <h1>Deepseek Chat</h1>
-            <button class="reset-button" 
-                    hx-post="/reset" 
-                    hx-confirm="Вы уверены, что хотите сбросить всю историю беседы?"
-                    hx-target="#conversation-history"
-                    hx-swap="innerHTML">Сбросить историю</button>
+            <div class="action-buttons">
+                <button id="stream-toggle" class="stream-toggle active" title="Режим потоковой загрузки ответов">Стриминг: вкл</button>
+                <button class="reset-button" 
+                        hx-post="/reset" 
+                        hx-confirm="Вы уверены, что хотите сбросить всю историю беседы?"
+                        hx-target="#conversation-history"
+                        hx-swap="innerHTML">Сбросить историю</button>
+            </div>
         </div>
         
         <!-- История сообщений -->
@@ -356,19 +408,14 @@
             {{end}}
         </div>
         
-        <form hx-post="/chat" 
-              hx-target="#response" 
-              hx-swap="innerHTML"
-              hx-indicator=".loading-container"
-              hx-trigger="submit"
-              hx-on="htmx:afterRequest: messageInput.value = ''"
-              id="chat-form">
+        <form id="chat-form">
             <div class="input-container">
                 <textarea name="message" 
                          id="message-input"
                          placeholder="Введите ваше сообщение... Поддерживается Markdown, LaTeX (например, $x^2 + y^2 = r^2$) и блоки кода (в ```)" 
                          required></textarea>
                 <button type="submit" class="submit-btn" id="submit-btn">Отправить</button>
+                <button type="button" class="cancel-btn" id="cancel-btn">Отмена</button>
                 <div class="loading-container">
                     <span>Генерирую</span>
                     <div class="loading-spinner"></div>
@@ -400,6 +447,15 @@
 
         let startTime = null;
         let timerInterval = null;
+        let streamController = null; // Для отмены потока
+        let isStreaming = true; // По умолчанию стриминг включен
+        
+        // Переключение режима стриминга
+        document.getElementById('stream-toggle').addEventListener('click', function() {
+            isStreaming = !isStreaming;
+            this.classList.toggle('active');
+            this.textContent = isStreaming ? 'Стриминг: вкл' : 'Стриминг: выкл';
+        });
 
         // Форматируем содержимое сообщений при загрузке страницы
         document.addEventListener('DOMContentLoaded', function() {
@@ -447,71 +503,282 @@
             }
         }
 
+        // Обработка отмены потокового запроса
+        document.getElementById('cancel-btn').addEventListener('click', function() {
+            if (streamController) {
+                streamController.abort();
+                streamController = null;
+                document.body.classList.remove('streaming');
+                
+                const submitBtn = document.getElementById('submit-btn');
+                const messageInput = document.getElementById('message-input');
+                
+                // Включаем элементы формы
+                submitBtn.disabled = false;
+                messageInput.disabled = false;
+                
+                // Останавливаем таймер
+                if (timerInterval) {
+                    clearInterval(timerInterval);
+                    timerInterval = null;
+                }
+                
+                // Показываем статус
+                const statusDiv = document.getElementById('status');
+                statusDiv.className = 'status-indicator status-error';
+                statusDiv.textContent = 'Запрос отменен';
+                statusDiv.style.display = 'block';
+                
+                // Убираем курсор набора текста
+                const cursor = document.querySelector('.cursor-typing');
+                if (cursor) cursor.remove();
+            }
+        });
+
         // Обработка горячих клавиш
         document.getElementById('message-input').addEventListener('keydown', function(e) {
             if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
                 e.preventDefault();
-                const submitBtn = document.getElementById('submit-btn');
-                if (!submitBtn.disabled) {
-                    htmx.trigger('#chat-form', 'submit');
+                if (!document.getElementById('submit-btn').disabled) {
+                    document.getElementById('chat-form').dispatchEvent(new Event('submit'));
                 }
             }
         });
 
-        // Предотвращаем стандартную отправку формы
+        // Обработка отправки формы
         document.getElementById('chat-form').addEventListener('submit', function(e) {
             e.preventDefault();
-            const submitBtn = document.getElementById('submit-btn');
-            if (!submitBtn.disabled) {
-                htmx.trigger(this, 'submit');
-            }
-        });
-
-        // Обработчики HTMX событий
-        document.body.addEventListener('htmx:beforeRequest', function(event) {
-            const statusDiv = document.getElementById('status');
+            
             const submitBtn = document.getElementById('submit-btn');
             const messageInput = document.getElementById('message-input');
+            const statusDiv = document.getElementById('status');
+            const responseDiv = document.getElementById('response');
             
-            statusDiv.style.display = 'none';
-            document.getElementById('response').classList.remove('fade-in');
+            // Проверяем, не пустое ли сообщение
+            const message = messageInput.value.trim();
+            if (!message) return;
             
-            // Отключаем кнопку и поле ввода
+            // Отключаем элементы формы
             submitBtn.disabled = true;
             messageInput.disabled = true;
             
+            // Очищаем предыдущий ответ и статус
+            responseDiv.innerHTML = '';
+            responseDiv.classList.remove('fade-in');
+            statusDiv.style.display = 'none';
+            
             // Запускаем таймер
             startTime = Date.now();
+            if (timerInterval) clearInterval(timerInterval);
             timerInterval = setInterval(updateResponseTime, 1000);
+            
+            if (isStreaming) {
+                // Используем потоковый режим
+                handleStreamingRequest(message);
+            } else {
+                // Используем обычный режим
+                handleRegularRequest(message);
+            }
         });
-
-        document.body.addEventListener('htmx:afterRequest', function(event) {
-            const statusDiv = document.getElementById('status');
+        
+        // Обработка потокового запроса
+        function handleStreamingRequest(message) {
             const responseDiv = document.getElementById('response');
+            const statusDiv = document.getElementById('status');
+            
+            // Создаем курсор набора текста
+            responseDiv.innerHTML = '<span class="cursor-typing"></span>';
+            
+            // Отмечаем, что идет стриминг
+            document.body.classList.add('streaming');
+            
+            // Подготавливаем контроллер для возможности отмены
+            streamController = new AbortController();
+            
+            // Отправляем запрос в потоковом режиме
+            fetch('/stream', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
+                body: `message=${encodeURIComponent(message)}`,
+                signal: streamController.signal
+            }).then(response => {
+                if (!response.ok) {
+                    throw new Error(`Ошибка сервера: ${response.status}`);
+                }
+                
+                // Очищаем перед началом получения частей ответа
+                responseDiv.innerHTML = '';
+                
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                
+                // Функция для чтения потока
+                function readStream() {
+                    return reader.read().then(({ value, done }) => {
+                        if (done) {
+                            // Обработка завершения потока
+                            completeStreaming();
+                            return;
+                        }
+                        
+                        const chunk = decoder.decode(value, { stream: true });
+                        const lines = chunk.split('\n\n');
+                        
+                        lines.forEach(line => {
+                            if (line.startsWith('data: ')) {
+                                const data = line.substring(6);
+                                
+                                // Проверяем, не завершающее ли это сообщение
+                                if (data === '[DONE]') {
+                                    completeStreaming();
+                                    return;
+                                }
+                                
+                                // Добавляем текст к ответу
+                                const existingText = responseDiv.innerHTML;
+                                const newText = existingText + data;
+                                responseDiv.innerHTML = newText;
+                            }
+                        });
+                        
+                        // Продолжаем чтение потока
+                        return readStream();
+                    });
+                }
+                
+                // Начинаем чтение потока
+                return readStream();
+            })
+            .catch(error => {
+                if (error.name === 'AbortError') {
+                    // Запрос был отменен пользователем
+                    console.log('Поток был отменен');
+                } else {
+                    // Обрабатываем другие ошибки
+                    console.error('Ошибка в потоке:', error);
+                    responseDiv.innerHTML = '';
+                    
+                    const errorDiv = document.createElement('div');
+                    errorDiv.className = 'error';
+                    errorDiv.textContent = `Ошибка: ${error.message}`;
+                    responseDiv.appendChild(errorDiv);
+                    
+                    statusDiv.className = 'status-indicator status-error';
+                    statusDiv.textContent = 'Произошла ошибка при выполнении запроса';
+                    statusDiv.style.display = 'block';
+                }
+                
+                // Возвращаем элементы в исходное состояние
+                cleanupAfterStreaming();
+            });
+        }
+        
+        // Функция завершения потоковой обработки
+        function completeStreaming() {
+            const responseDiv = document.getElementById('response');
+            const statusDiv = document.getElementById('status');
+            
+            // Форматирование полученного ответа
+            const rawResponse = responseDiv.innerHTML;
+            responseDiv.innerHTML = marked.parse(rawResponse);
+            
+            // Добавляем класс для анимации
+            responseDiv.classList.add('fade-in');
+            
+            // Подсвечиваем код
+            responseDiv.querySelectorAll('pre code').forEach((block) => {
+                hljs.highlightElement(block);
+            });
+            
+            // Обрабатываем LaTeX
+            if (window.MathJax) {
+                MathJax.typesetPromise([responseDiv]).catch((err) => console.log('MathJax error:', err));
+            }
+            
+            // Показываем статус успеха
+            statusDiv.className = 'status-indicator status-success';
+            statusDiv.textContent = 'Ответ успешно получен';
+            statusDiv.style.display = 'block';
+            
+            // Очищаем состояние потока
+            cleanupAfterStreaming();
+            
+            // Добавляем время ответа
+            if (startTime) {
+                const elapsed = Math.floor((Date.now() - startTime) / 1000);
+                const minutes = Math.floor(elapsed / 60);
+                const seconds = elapsed % 60;
+                const timeStr = minutes > 0 ? 
+                    `${minutes}м ${seconds}с` : 
+                    `${seconds}с`;
+                
+                const timeDiv = document.createElement('div');
+                timeDiv.className = 'response-time';
+                timeDiv.textContent = `Время ответа: ${timeStr}`;
+                responseDiv.appendChild(timeDiv);
+            }
+            
+            // Прокручиваем к ответу
+            responseDiv.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            
+            // Обновляем страницу для отображения обновленной истории
+            setTimeout(() => {
+                window.location.reload();
+            }, 1000);
+        }
+        
+        // Очистка после стриминга
+        function cleanupAfterStreaming() {
             const submitBtn = document.getElementById('submit-btn');
             const messageInput = document.getElementById('message-input');
             
-            // Включаем кнопку и поле ввода
+            // Сбрасываем контроллер
+            streamController = null;
+            
+            // Снимаем метку стриминга
+            document.body.classList.remove('streaming');
+            
+            // Включаем элементы формы
             submitBtn.disabled = false;
             messageInput.disabled = false;
             
-            // Останавливаем таймер
-            clearInterval(timerInterval);
+            // Очищаем поле ввода
+            messageInput.value = '';
             
-            if (event.detail.failed) {
-                const response = event.detail.xhr.response;
-                const errorDiv = document.createElement('div');
-                errorDiv.className = 'error';
-                errorDiv.textContent = response;
-                responseDiv.innerHTML = '';
-                responseDiv.appendChild(errorDiv);
+            // Останавливаем таймер
+            if (timerInterval) {
+                clearInterval(timerInterval);
+                timerInterval = null;
+            }
+            
+            startTime = null;
+        }
+        
+        // Обработка обычного запроса
+        function handleRegularRequest(message) {
+            const formData = new FormData();
+            formData.append('message', message);
+            
+            fetch('/chat', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => {
+                if (!response.ok) {
+                    return response.text().then(text => {
+                        throw new Error(text || `Ошибка сервера: ${response.status}`);
+                    });
+                }
+                return response.text();
+            })
+            .then(data => {
+                const responseDiv = document.getElementById('response');
+                const statusDiv = document.getElementById('status');
                 
-                statusDiv.className = 'status-indicator status-error';
-                statusDiv.textContent = 'Произошла ошибка при выполнении запроса';
-            } else {
                 // Преобразуем ответ в Markdown
-                const rawResponse = responseDiv.innerHTML;
-                const decodedResponse = new DOMParser().parseFromString(rawResponse, 'text/html').documentElement.textContent;
+                const decodedResponse = new DOMParser().parseFromString(data, 'text/html').documentElement.textContent;
                 responseDiv.innerHTML = marked.parse(decodedResponse);
                 responseDiv.classList.add('fade-in');
                 
@@ -539,25 +806,58 @@
                 
                 statusDiv.className = 'status-indicator status-success';
                 statusDiv.textContent = 'Ответ успешно получен';
+                statusDiv.style.display = 'block';
                 
-                // Обновляем историю беседы
+                // Включаем форму и очищаем поле ввода
+                document.getElementById('submit-btn').disabled = false;
+                const messageInput = document.getElementById('message-input');
+                messageInput.disabled = false;
+                messageInput.value = '';
+                
+                // Останавливаем таймер
+                if (timerInterval) {
+                    clearInterval(timerInterval);
+                    timerInterval = null;
+                }
+                
+                startTime = null;
+                
+                // Прокрутка к ответу
+                responseDiv.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                
+                // Обновляем страницу для отображения обновленной истории
                 setTimeout(() => {
                     window.location.reload();
                 }, 1000);
-            }
-            
-            statusDiv.style.display = 'block';
-            responseDiv.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-            
-            startTime = null;
-        });
-
-        // Обработка отмены запроса
-        document.body.addEventListener('htmx:beforeUnload', function(event) {
-            if (timerInterval) {
-                clearInterval(timerInterval);
-            }
-        });
+            })
+            .catch(error => {
+                const responseDiv = document.getElementById('response');
+                const statusDiv = document.getElementById('status');
+                
+                const errorDiv = document.createElement('div');
+                errorDiv.className = 'error';
+                errorDiv.textContent = error.message;
+                responseDiv.innerHTML = '';
+                responseDiv.appendChild(errorDiv);
+                
+                statusDiv.className = 'status-indicator status-error';
+                statusDiv.textContent = 'Произошла ошибка при выполнении запроса';
+                statusDiv.style.display = 'block';
+                
+                // Включаем форму
+                document.getElementById('submit-btn').disabled = false;
+                const messageInput = document.getElementById('message-input');
+                messageInput.disabled = false;
+                
+                // Останавливаем таймер
+                if (timerInterval) {
+                    clearInterval(timerInterval);
+                    timerInterval = null;
+                }
+                
+                startTime = null;
+            });
+        }
     </script>
 </body>
 </html> 

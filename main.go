@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -26,6 +27,7 @@ type DeepseekRequest struct {
 		Type string `json:"type"`
 	} `json:"response_format"`
 	Temperature float64 `json:"temperature"`
+	Stream      bool    `json:"stream"`
 }
 
 type DeepseekResponse struct {
@@ -36,7 +38,16 @@ type DeepseekResponse struct {
 	} `json:"choices"`
 }
 
-// Структура для истории переписки
+// Структура для SSE
+type StreamResponse struct {
+	Choices []struct {
+		Delta struct {
+			Content string `json:"content"`
+		} `json:"delta"`
+	} `json:"choices"`
+}
+
+// ConversationHistory Структура для истории переписки
 type ConversationHistory struct {
 	sync.Mutex
 	Messages []Message
@@ -47,6 +58,9 @@ var conversationHistory = ConversationHistory{
 	Messages: []Message{},
 }
 
+// Модель AI
+const model = "google/gemini-2.0-flash-lite-preview-02-05:free"
+
 func enableCors(w *http.ResponseWriter) {
 	(*w).Header().Set("Access-Control-Allow-Origin", "*")
 	(*w).Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
@@ -56,6 +70,7 @@ func enableCors(w *http.ResponseWriter) {
 func main() {
 	http.HandleFunc("/", handleHome)
 	http.HandleFunc("/chat", handleChat)
+	http.HandleFunc("/stream", handleStream)
 	http.HandleFunc("/reset", handleReset)
 	http.Handle("/templates/", http.StripPrefix("/templates/", http.FileServer(http.Dir("templates"))))
 
@@ -136,6 +151,160 @@ func formatLatex(text string) string {
 	return text
 }
 
+// Обработчик потокового режима
+func handleStream(w http.ResponseWriter, r *http.Request) {
+	enableCors(&w)
+
+	if r.Method == http.MethodOptions {
+		return
+	}
+
+	if r.Method != http.MethodPost {
+		http.Error(w, "Метод не поддерживается", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Настраиваем заголовки для SSE
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	userMessage := r.FormValue("message")
+	if userMessage == "" {
+		http.Error(w, "Сообщение не может быть пустым", http.StatusBadRequest)
+		return
+	}
+
+	apiKey := os.Getenv("OPENROUTER_API_KEY")
+	if apiKey == "" {
+		http.Error(w, "API ключ не настроен", http.StatusInternalServerError)
+		return
+	}
+
+	// Добавляем сообщение пользователя в историю
+	conversationHistory.Lock()
+	conversationHistory.Messages = append(conversationHistory.Messages, Message{
+		Role:    "user",
+		Content: userMessage,
+	})
+
+	// Создаем копию сообщений для запроса
+	messagesCopy := make([]Message, len(conversationHistory.Messages))
+	copy(messagesCopy, conversationHistory.Messages)
+	conversationHistory.Unlock()
+
+	reqBody := DeepseekRequest{
+		Model:       model,
+		Messages:    messagesCopy,
+		Temperature: 1,
+		Stream:      true, // Включаем стриминг
+	}
+	reqBody.ResponseFormat.Type = "text"
+
+	jsonData, err := json.Marshal(reqBody)
+	if err != nil {
+		http.Error(w, "Ошибка при формировании запроса", http.StatusInternalServerError)
+		return
+	}
+
+	req, err := http.NewRequest("POST", "https://openrouter.ai/api/v1/chat/completions", bytes.NewBuffer(jsonData))
+	if err != nil {
+		http.Error(w, "Ошибка при создании запроса", http.StatusInternalServerError)
+		return
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("HTTP-Referer", "http://localhost:8080")
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		http.Error(w, "Ошибка при отправке запроса", http.StatusInternalServerError)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		http.Error(w, fmt.Sprintf("API вернул ошибку: %s - %s", resp.Status, string(body)), resp.StatusCode)
+		return
+	}
+
+	// Создаем флашер для принудительной отправки данных клиенту
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "Streaming не поддерживается", http.StatusInternalServerError)
+		return
+	}
+
+	// Чтение потока с ответом
+	reader := bufio.NewReader(resp.Body)
+
+	// Буфер для накопления ответа полностью
+	fullResponseContent := ""
+
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			log.Printf("Ошибка чтения потока: %v", err)
+			break
+		}
+
+		// Пропускаем пустые строки
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		// Обрабатываем данные в формате SSE
+		if strings.HasPrefix(line, "data: ") {
+			data := strings.TrimPrefix(line, "data: ")
+
+			// Проверка окончания потока
+			if data == "[DONE]" {
+				// Отправляем финальный маркер клиенту
+				fmt.Fprintf(w, "data: [DONE]\n\n")
+				flusher.Flush()
+				break
+			}
+
+			// Парсим JSON с частью ответа
+			var streamResp StreamResponse
+			if err := json.Unmarshal([]byte(data), &streamResp); err != nil {
+				log.Printf("Ошибка парсинга JSON: %v", err)
+				continue
+			}
+
+			// Получаем новую часть контента
+			if len(streamResp.Choices) > 0 {
+				content := streamResp.Choices[0].Delta.Content
+				if content != "" {
+					// Накапливаем полный ответ
+					fullResponseContent += content
+
+					// Отправляем часть ответа клиенту
+					fmt.Fprintf(w, "data: %s\n\n", content)
+					flusher.Flush()
+				}
+			}
+		}
+	}
+
+	// Добавляем ответ ассистента в историю
+	if fullResponseContent != "" {
+		conversationHistory.Lock()
+		conversationHistory.Messages = append(conversationHistory.Messages, Message{
+			Role:    "assistant",
+			Content: fullResponseContent,
+		})
+		conversationHistory.Unlock()
+	}
+}
+
 func handleChat(w http.ResponseWriter, r *http.Request) {
 	enableCors(&w)
 
@@ -175,7 +344,7 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 	conversationHistory.Unlock()
 
 	reqBody := DeepseekRequest{
-		Model:       "google/gemini-2.0-flash-lite-preview-02-05:free",
+		Model:       "deepseek/deepseek-chat",
 		Messages:    messagesCopy,
 		Temperature: 1,
 	}
