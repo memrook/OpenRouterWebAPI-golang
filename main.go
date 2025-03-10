@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 )
 
 type Message struct {
@@ -68,14 +69,27 @@ func enableCors(w *http.ResponseWriter) {
 }
 
 func main() {
+	// Проверяем наличие API ключа
+	apiKey := os.Getenv("OPENROUTER_API_KEY")
+	if apiKey == "" {
+		log.Fatal("OPENROUTER_API_KEY не настроен. Установите переменную окружения OPENROUTER_API_KEY.")
+	}
+
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+
 	http.HandleFunc("/", handleHome)
 	http.HandleFunc("/chat", handleChat)
+	http.HandleFunc("/query", handleChat)
 	http.HandleFunc("/stream", handleStream)
 	http.HandleFunc("/reset", handleReset)
+	http.HandleFunc("/api-status", handleAPIStatus)
 	http.Handle("/templates/", http.StripPrefix("/templates/", http.FileServer(http.Dir("templates"))))
 
-	log.Println("Сервер запущен на http://localhost:8080")
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	log.Println("Сервер запущен на http://localhost:" + port)
+	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
 
 func handleHome(w http.ResponseWriter, r *http.Request) {
@@ -159,7 +173,8 @@ func handleStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if r.Method != http.MethodPost {
+	// Поддерживаем как GET, так и POST запросы для SSE
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
 		http.Error(w, "Метод не поддерживается", http.StatusMethodNotAllowed)
 		return
 	}
@@ -168,8 +183,17 @@ func handleStream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
 
-	userMessage := r.FormValue("message")
+	var userMessage string
+	if r.Method == http.MethodGet {
+		// Для EventSource используется GET запрос с параметрами в URL
+		userMessage = r.URL.Query().Get("message")
+	} else {
+		// Для обычных POST запросов используем FormValue
+		userMessage = r.FormValue("message")
+	}
+
 	if userMessage == "" {
 		http.Error(w, "Сообщение не может быть пустым", http.StatusBadRequest)
 		return
@@ -217,19 +241,25 @@ func handleStream(w http.ResponseWriter, r *http.Request) {
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("HTTP-Referer", "http://localhost:8080")
 
+	log.Printf("Отправка запроса на API OpenRouter с параметрами: %+v", reqBody)
+
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
-		http.Error(w, "Ошибка при отправке запроса", http.StatusInternalServerError)
+		log.Printf("Ошибка при отправке запроса: %v", err)
+		http.Error(w, "Ошибка при отправке запроса: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
+		log.Printf("API вернул ошибку: %s - %s", resp.Status, string(body))
 		http.Error(w, fmt.Sprintf("API вернул ошибку: %s - %s", resp.Status, string(body)), resp.StatusCode)
 		return
 	}
+
+	log.Printf("Успешный ответ от API, начинаю потоковую передачу клиенту")
 
 	// Создаем флашер для принудительной отправки данных клиенту
 	flusher, ok := w.(http.Flusher)
@@ -286,8 +316,13 @@ func handleStream(w http.ResponseWriter, r *http.Request) {
 					// Накапливаем полный ответ
 					fullResponseContent += content
 
-					// Отправляем часть ответа клиенту
-					fmt.Fprintf(w, "data: %s\n\n", content)
+					// Отправляем часть ответа клиенту в правильном формате SSE
+					// Отправляем исходный JSON для совместимости с клиентским кодом
+					_, err := fmt.Fprintf(w, "data: %s\n\n", data)
+					if err != nil {
+						log.Printf("Ошибка при отправке данных клиенту: %v", err)
+						return
+					}
 					flusher.Flush()
 				}
 			}
@@ -344,7 +379,7 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 	conversationHistory.Unlock()
 
 	reqBody := DeepseekRequest{
-		Model:       "deepseek/deepseek-chat",
+		Model:       model,
 		Messages:    messagesCopy,
 		Temperature: 1,
 	}
@@ -366,13 +401,25 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("HTTP-Referer", "http://localhost:8080")
 
+	log.Printf("Отправка запроса на API OpenRouter с параметрами: %+v", reqBody)
+
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
-		http.Error(w, "Ошибка при отправке запроса", http.StatusInternalServerError)
+		log.Printf("Ошибка при отправке запроса: %v", err)
+		http.Error(w, "Ошибка при отправке запроса: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		log.Printf("API вернул ошибку: %s - %s", resp.Status, string(body))
+		http.Error(w, fmt.Sprintf("API вернул ошибку: %s - %s", resp.Status, string(body)), resp.StatusCode)
+		return
+	}
+
+	log.Printf("Успешный ответ от API, начинаю потоковую передачу клиенту")
 
 	var deepseekResp DeepseekResponse
 	body, err := io.ReadAll(resp.Body)
@@ -402,4 +449,62 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 	} else {
 		http.Error(w, "Пустой ответ от API", http.StatusInternalServerError)
 	}
+}
+
+// Обработчик для проверки статуса API
+func handleAPIStatus(w http.ResponseWriter, r *http.Request) {
+	enableCors(&w)
+
+	w.Header().Set("Content-Type", "application/json")
+
+	apiKey := os.Getenv("OPENROUTER_API_KEY")
+	if apiKey == "" {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{
+			"status":  "error",
+			"message": "API ключ не настроен",
+		})
+		return
+	}
+
+	// Создаем простой запрос к API для проверки статуса
+	req, err := http.NewRequest("GET", "https://openrouter.ai/api/v1/models", nil)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{
+			"status":  "error",
+			"message": "Ошибка при создании запроса: " + err.Error(),
+		})
+		return
+	}
+
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{
+			"status":  "error",
+			"message": "Ошибка при отправке запроса: " + err.Error(),
+		})
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		w.WriteHeader(resp.StatusCode)
+		json.NewEncoder(w).Encode(map[string]string{
+			"status":  "error",
+			"message": fmt.Sprintf("API вернул ошибку: %s - %s", resp.Status, string(body)),
+		})
+		return
+	}
+
+	// Если всё хорошо, возвращаем успешный статус
+	json.NewEncoder(w).Encode(map[string]string{
+		"status":  "ok",
+		"message": "API работает нормально",
+	})
 }

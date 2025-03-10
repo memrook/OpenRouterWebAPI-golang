@@ -261,6 +261,29 @@
             color: #721c24;
             border: 1px solid #f5c6cb;
         }
+        .status-warning {
+            background-color: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeeba;
+        }
+        .status-loading {
+            background-color: #cce5ff;
+            color: #004085;
+            border: 1px solid #b8daff;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .status-loading::after {
+            content: '';
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border: 2px solid rgba(0,64,133,0.3);
+            border-radius: 50%;
+            border-top-color: #004085;
+            animation: spin 1s ease-in-out infinite;
+        }
         /* Стили для LaTeX блоков */
         .latex-block {
             margin: 15px 0;
@@ -364,8 +387,8 @@
             display: none;
         }
         
-        /* Курсор ввода для симуляции набора текста */
-        .cursor-typing {
+        /* Курсор для симуляции набора текста */
+        .typing-cursor {
             display: inline-block;
             width: 5px;
             height: 17px;
@@ -377,6 +400,58 @@
         @keyframes blink {
             0%, 100% { opacity: 1; }
             50% { opacity: 0; }
+        }
+        
+        /* Стиль для сообщения об отмене */
+        .cancel-message {
+            color: #dc3545;
+            font-style: italic;
+            margin-top: 5px;
+            font-size: 0.9em;
+        }
+        
+        /* Стиль для сообщения об ошибке */
+        .error-message {
+            color: #dc3545;
+            background-color: #f8d7da;
+            border: 1px solid #f5c6cb;
+            padding: 10px;
+            border-radius: 5px;
+            margin-top: 10px;
+        }
+        
+        /* Стиль для кнопки повторной попытки */
+        .retry-btn {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 3px;
+            padding: 5px 10px;
+            margin-left: 5px;
+            cursor: pointer;
+            font-size: 0.9em;
+        }
+        .retry-btn:hover {
+            background-color: #0056b3;
+        }
+        
+        /* Стиль для кнопки проверки API */
+        .check-api-btn {
+            display: none;
+            background-color: #17a2b8;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            padding: 5px 10px;
+            font-size: 12px;
+            cursor: pointer;
+            margin-left: 10px;
+        }
+        .check-api-btn:hover {
+            background-color: #138496;
+        }
+        .status-error .check-api-btn {
+            display: inline-block;
         }
     </style>
 </head>
@@ -399,7 +474,7 @@
             {{if .Messages}}
                 {{range .Messages}}
                     <div class="message {{if eq .Role "user"}}message-user{{else}}message-assistant{{end}}">
-                        <div class="message-role">{{if eq .Role "user"}}Вы{{else}}Deepseek{{end}}</div>
+                        <div class="message-role">{{if eq .Role "user"}}Вы{{else}}Ассистент{{end}}</div>
                         <div class="message-content">{{.Content}}</div>
                     </div>
                 {{end}}
@@ -408,14 +483,14 @@
             {{end}}
         </div>
         
-        <form id="chat-form" onsubmit="return false;">
+        <form id="message-form">
             <div class="input-container">
                 <textarea name="message" 
                          id="message-input"
                          placeholder="Введите ваше сообщение... Поддерживается Markdown, LaTeX (например, $x^2 + y^2 = r^2$) и блоки кода (в ```)" 
                          required></textarea>
-                <button type="button" class="submit-btn" id="submit-btn" onclick="submitMessage()">Отправить</button>
-                <button type="button" class="cancel-btn" id="cancel-btn">Отмена</button>
+                <button type="submit" class="submit-btn" id="submit-btn">Отправить</button>
+                <button type="button" class="cancel-btn" id="cancel-stream-btn">Отмена</button>
                 <div class="loading-container">
                     <span>Генерирую</span>
                     <div class="loading-spinner"></div>
@@ -424,9 +499,12 @@
             </div>
         </form>
         <div id="response" class="response"></div>
-        <div id="status" class="status-indicator"></div>
+        <div id="status" class="status-indicator">
+            <button id="check-api-btn" class="check-api-btn" onclick="checkAPIStatus()">Проверить API</button>
+        </div>
         <div class="context-info">
-            <span id="context-size">Сообщений в истории: {{len .Messages}}</span>
+            <span id="message-count">Сообщений в истории: {{len .Messages}}</span>
+            <span id="response-time">0.00 сек</span>
         </div>
     </div>
 
@@ -434,10 +512,21 @@
         // Настройка Marked
         marked.setOptions({
             highlight: function(code, lang) {
+                // Если указан язык и он поддерживается
                 if (lang && hljs.getLanguage(lang)) {
-                    return hljs.highlight(code, { language: lang }).value;
+                    try {
+                        return hljs.highlight(code, { language: lang }).value;
+                    } catch (error) {
+                        console.error('Ошибка подсветки синтаксиса:', error);
+                    }
                 }
-                return hljs.highlightAuto(code).value;
+                // Иначе пробуем автоопределение
+                try {
+                    return hljs.highlightAuto(code).value;
+                } catch (error) {
+                    console.error('Ошибка автоопределения синтаксиса:', error);
+                    return code; // Возвращаем оригинальный код без подсветки
+                }
             },
             breaks: true,
             gfm: true,
@@ -445,44 +534,117 @@
             mangle: false
         });
 
+        // Инициализация переменных
+        let isWaitingForResponse = false;
         let startTime = null;
-        let timerInterval = null;
-        let streamController = null; // Для отмены потока
+        let currentStreamSource = null;
+        let currentStreamingResponseId = null;
         let isStreaming = true; // По умолчанию стриминг включен
+        let timerInterval = null;
+        let historyDiv = document.getElementById('conversation-history');
+        let messageInput = document.getElementById('message-input');
         
-        // Переключение режима стриминга
-        document.getElementById('stream-toggle').addEventListener('click', function() {
-            isStreaming = !isStreaming;
-            this.classList.toggle('active');
-            this.textContent = isStreaming ? 'Стриминг: вкл' : 'Стриминг: выкл';
-        });
-
-        // Форматируем содержимое сообщений при загрузке страницы
+        // При загрузке DOM
         document.addEventListener('DOMContentLoaded', function() {
-            // Форматируем все сообщения в истории
+            // Обновляем ссылки на элементы DOM
+            historyDiv = document.getElementById('conversation-history');
+            messageInput = document.getElementById('message-input');
+            
+            const messageForm = document.getElementById('message-form');
+            const submitBtn = document.getElementById('submit-btn');
+            const resetBtn = document.getElementById('reset-btn');
+            const streamToggle = document.getElementById('stream-toggle');
+            const cancelStreamBtn = document.getElementById('cancel-stream-btn');
+            
+            // Проверяем статус API при загрузке страницы
+            checkAPIStatus();
+            
+            // Форматируем сообщения в истории при загрузке страницы
             document.querySelectorAll('.message-content').forEach(function(element) {
-                const rawText = element.textContent;
-                element.innerHTML = marked.parse(rawText);
-                
-                // Подсвечиваем код
-                element.querySelectorAll('pre code').forEach((block) => {
-                    hljs.highlightElement(block);
-                });
+                try {
+                    // Сохраняем исходный текст
+                    const rawText = element.textContent;
+                    
+                    // Применяем Markdown
+                    element.innerHTML = marked.parse(rawText);
+                    
+                    // Подсвечиваем код
+                    applyHighlightToCodeBlocks(element);
+                    
+                    // Рендерим LaTeX формулы
+                    if (typeof MathJax !== 'undefined') {
+                        MathJax.typesetPromise([element]).catch(function (err) {
+                            console.error('Ошибка при рендеринге LaTeX:', err);
+                        });
+                    }
+                } catch (error) {
+                    console.error('Ошибка при форматировании сообщения:', error);
+                }
             });
             
-            // Подсвечиваем математические формулы
-            if (window.MathJax) {
-                MathJax.typesetPromise(document.querySelectorAll('.message-content'))
-                    .catch((err) => console.log('MathJax error:', err));
-            }
-            
             // Прокручиваем к последнему сообщению
-            const historyDiv = document.querySelector('.conversation-history');
             if (historyDiv) {
                 historyDiv.scrollTop = historyDiv.scrollHeight;
             }
+            
+            // Переключение режима стриминга
+            streamToggle.addEventListener('click', function() {
+                toggleStreamingMode(!isStreaming);
+            });
+            
+            // Обработчик отмены потокового запроса
+            cancelStreamBtn.addEventListener('click', function() {
+                cancelStream();
+            });
+            
+            // Горячие клавиши
+            document.addEventListener('keydown', function(event) {
+                // Ctrl+Enter или Cmd+Enter для отправки формы
+                if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+                    event.preventDefault();
+                    if (!messageInput.value.trim() || isWaitingForResponse) {
+                        return;
+                    }
+                    
+                    submitMessage();
+                }
+                
+                // Escape для отмены потокового запроса
+                if (event.key === 'Escape' && currentStreamSource) {
+                    cancelStream();
+                }
+            });
+            
+            // Перехватываем отправку формы
+            messageForm.addEventListener('submit', function(event) {
+                event.preventDefault();
+                
+                const message = messageInput.value.trim();
+                if (!message || isWaitingForResponse) {
+                    return;
+                }
+                
+                submitMessage();
+            });
+            
+            // Обработчик сброса истории
+            resetBtn.addEventListener('click', function() {
+                if (confirm('Вы уверены, что хотите очистить всю историю диалога?')) {
+                    historyDiv.innerHTML = '';
+                    document.getElementById('message-count').textContent = 'Сообщений в истории: 0';
+                    document.getElementById('response-time').textContent = '0.00 сек';
+                    
+                    // Отправляем запрос на сервер для очистки истории
+                    fetch('/reset', { method: 'POST' })
+                    .catch(error => console.error('Ошибка при сбросе истории:', error));
+                }
+            });
+            
+            // Инициализируем начальное состояние UI
+            updateUIState();
         });
-
+        
+        // Функция обновления времени ответа
         function updateResponseTime() {
             if (startTime) {
                 const elapsed = Math.floor((Date.now() - startTime) / 1000);
@@ -492,59 +654,10 @@
                     `${minutes}м ${seconds}с` : 
                     `${seconds}с`;
                 
-                const responseDiv = document.getElementById('response');
-                let timeDiv = responseDiv.querySelector('.response-time');
-                if (!timeDiv) {
-                    timeDiv = document.createElement('div');
-                    timeDiv.className = 'response-time';
-                    responseDiv.appendChild(timeDiv);
-                }
-                timeDiv.textContent = `Время ответа: ${timeStr}`;
+                document.getElementById('response-time').textContent = `${timeStr}`;
             }
         }
-
-        // Обработка отмены потокового запроса
-        document.getElementById('cancel-btn').addEventListener('click', function() {
-            if (streamController) {
-                streamController.abort();
-                streamController = null;
-                document.body.classList.remove('streaming');
-                
-                const submitBtn = document.getElementById('submit-btn');
-                const messageInput = document.getElementById('message-input');
-                
-                // Включаем элементы формы
-                submitBtn.disabled = false;
-                messageInput.disabled = false;
-                
-                // Останавливаем таймер
-                if (timerInterval) {
-                    clearInterval(timerInterval);
-                    timerInterval = null;
-                }
-                
-                // Показываем статус
-                const statusDiv = document.getElementById('status');
-                statusDiv.className = 'status-indicator status-error';
-                statusDiv.textContent = 'Запрос отменен';
-                statusDiv.style.display = 'block';
-                
-                // Убираем курсор набора текста
-                const cursor = document.querySelector('.cursor-typing');
-                if (cursor) cursor.remove();
-            }
-        });
-
-        // Обработка горячих клавиш
-        document.getElementById('message-input').addEventListener('keydown', function(e) {
-            if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
-                e.preventDefault();
-                if (!document.getElementById('submit-btn').disabled) {
-                    submitMessage();
-                }
-            }
-        });
-
+        
         // Основная функция отправки сообщения
         function submitMessage() {
             const submitBtn = document.getElementById('submit-btn');
@@ -579,120 +692,282 @@
             }
         }
         
-        // Обработка потокового запроса
-        function handleStreamingRequest(message) {
-            const responseDiv = document.getElementById('response');
-            const statusDiv = document.getElementById('status');
-            
-            // Создаем курсор набора текста
-            responseDiv.innerHTML = '<span class="cursor-typing"></span>';
-            
-            // Отмечаем, что идет стриминг
-            document.body.classList.add('streaming');
-            
-            // Подготавливаем контроллер для возможности отмены
-            streamController = new AbortController();
-            
-            // Отправляем запрос в потоковом режиме
-            fetch('/stream', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                },
-                body: `message=${encodeURIComponent(message)}`,
-                signal: streamController.signal
-            }).then(response => {
-                if (!response.ok) {
-                    throw new Error(`Ошибка сервера: ${response.status}`);
-                }
-                
-                // Очищаем перед началом получения частей ответа
-                responseDiv.innerHTML = '';
-                
-                const reader = response.body.getReader();
-                const decoder = new TextDecoder();
-                
-                // Функция для чтения потока
-                function readStream() {
-                    return reader.read().then(({ value, done }) => {
-                        if (done) {
-                            // Обработка завершения потока
-                            completeStreaming();
-                            return;
+        // Функция для подсветки синтаксиса в блоках кода
+        function applyHighlightToCodeBlocks(container) {
+            try {
+                const codeBlocks = container.querySelectorAll('pre code');
+                codeBlocks.forEach((block) => {
+                    const languageClass = [...block.classList].find(cls => cls.startsWith('language-'));
+                    if (languageClass) {
+                        const language = languageClass.replace('language-', '');
+                        if (hljs.getLanguage(language)) {
+                            hljs.highlightElement(block);
+                        } else {
+                            hljs.highlightAuto(block);
                         }
-                        
-                        const chunk = decoder.decode(value, { stream: true });
-                        const lines = chunk.split('\n\n');
-                        
-                        lines.forEach(line => {
-                            if (line.startsWith('data: ')) {
-                                const data = line.substring(6);
-                                
-                                // Проверяем, не завершающее ли это сообщение
-                                if (data === '[DONE]') {
-                                    completeStreaming();
-                                    return;
-                                }
-                                
-                                // Добавляем текст к ответу
-                                const existingText = responseDiv.innerHTML;
-                                const newText = existingText + data;
-                                responseDiv.innerHTML = newText;
-                            }
-                        });
-                        
-                        // Продолжаем чтение потока
-                        return readStream();
-                    });
-                }
-                
-                // Начинаем чтение потока
-                return readStream();
-            })
-            .catch(error => {
-                if (error.name === 'AbortError') {
-                    // Запрос был отменен пользователем
-                    console.log('Поток был отменен');
-                } else {
-                    // Обрабатываем другие ошибки
-                    console.error('Ошибка в потоке:', error);
-                    responseDiv.innerHTML = '';
-                    
-                    const errorDiv = document.createElement('div');
-                    errorDiv.className = 'error';
-                    errorDiv.textContent = `Ошибка: ${error.message}`;
-                    responseDiv.appendChild(errorDiv);
-                    
-                    statusDiv.className = 'status-indicator status-error';
-                    statusDiv.textContent = 'Произошла ошибка при выполнении запроса';
-                    statusDiv.style.display = 'block';
-                }
-                
-                // Возвращаем элементы в исходное состояние
-                cleanupAfterStreaming();
-            });
+                    } else {
+                        hljs.highlightAuto(block);
+                    }
+                });
+            } catch (error) {
+                console.error('Ошибка при подсветке кода:', error);
+            }
+        }
+
+        // Функция для добавления сообщения пользователя в историю
+        function addUserMessageToHistory(message) {
+            const userMessageDiv = document.createElement('div');
+            userMessageDiv.className = 'message message-user';
+            
+            // Безопасно применяем Markdown к сообщению пользователя
+            let formattedUserMessage;
+            try {
+                formattedUserMessage = marked.parse(message);
+            } catch (error) {
+                console.error('Ошибка форматирования сообщения пользователя:', error);
+                formattedUserMessage = `<pre>${message}</pre>`; // Используем pre для сохранения форматирования
+            }
+            
+            userMessageDiv.innerHTML = `
+                <div class="message-role">Вы</div>
+                <div class="message-content">${formattedUserMessage}</div>
+            `;
+            historyDiv.appendChild(userMessageDiv);
+            
+            // Добавляем подсветку синтаксиса для блоков кода в сообщении пользователя
+            applyHighlightToCodeBlocks(userMessageDiv);
+            
+            // Прокручиваем историю к последнему сообщению
+            historyDiv.scrollTop = historyDiv.scrollHeight;
+            
+            return userMessageDiv;
         }
         
-        // Функция завершения потоковой обработки
-        function completeStreaming() {
-            const responseDiv = document.getElementById('response');
+        // Обработка потокового запроса
+        function handleStreamingRequest(message) {
+            const statusDiv = document.getElementById('status');
+            const historyDiv = document.getElementById('conversation-history');
+            
+            // Создаем уникальный идентификатор для этого ответа
+            const responseId = 'streaming-response-' + Date.now();
+            
+            // Добавляем сообщение пользователя в историю
+            const userMessageDiv = addUserMessageToHistory(message);
+            
+            // Добавляем блок для ответа ассистента с курсором набора текста
+            const streamingResponseDiv = document.createElement('div');
+            streamingResponseDiv.id = responseId;
+            streamingResponseDiv.className = 'message message-assistant';
+            streamingResponseDiv.innerHTML = `
+                <div class="message-role">Ассистент</div>
+                <div class="message-content"><div class="typing-cursor"></div></div>
+            `;
+            historyDiv.appendChild(streamingResponseDiv);
+            
+            // Прокручиваем историю к последнему сообщению
+            historyDiv.scrollTop = historyDiv.scrollHeight;
+            
+            // Сохраняем идентификатор текущего ответа
+            currentStreamingResponseId = responseId;
+            
+            // Определяем переменные для накопления текста и таймеры
+            let accumulatedText = '';
+            let partialJSON = '';
+            let decoder = new TextDecoder();
+            
+            // Показываем статус запроса
+            statusDiv.className = 'status-indicator status-loading';
+            statusDiv.textContent = 'Отправка запроса...';
+            statusDiv.style.display = 'block';
+            
+            // Активируем кнопку отмены потока
+            document.getElementById('cancel-stream-btn').disabled = false;
+            
+            // Запускаем таймер
+            startTime = new Date();
+            
+            // Обновляем счетчик сообщений
+            updateMessageCount();
+            
+            // Устанавливаем флаг, что ожидаем ответ
+            isWaitingForResponse = true;
+            updateUIState();
+            
+            // Получаем источник событий сервера
+            const evtSource = new EventSource(`/stream?message=${encodeURIComponent(message)}`);
+            
+            // Сохраняем ссылку на источник событий для возможности отмены
+            currentStreamSource = evtSource;
+            
+            // Добавляем обработчик сообщений
+            evtSource.onmessage = function(event) {
+                // Показываем статус загрузки
+                statusDiv.className = 'status-indicator status-loading';
+                statusDiv.textContent = 'Получение ответа...';
+                
+                // Отладочный вывод в консоль
+                console.log('Получено событие:', event.data);
+                
+                try {
+                    // Проверяем, не завершающее ли это сообщение
+                    if (event.data === '[DONE]') {
+                        console.log('Получен сигнал завершения потока');
+                        completeStreaming(streamingResponseDiv);
+                        return;
+                    }
+                    
+                    // Парсим JSON ответ
+                    const parsedData = JSON.parse(event.data);
+                    console.log('Успешно разобран JSON:', parsedData);
+                    
+                    if (parsedData.choices && parsedData.choices.length > 0) {
+                        const delta = parsedData.choices[0].delta;
+                        
+                        // Проверяем, содержит ли дельта текст
+                        if (delta && delta.content) {
+                            const deltaContent = delta.content;
+                            accumulatedText += deltaContent;
+                            
+                            // Обновляем содержимое сообщения
+                            const contentDiv = streamingResponseDiv.querySelector('.message-content');
+                            contentDiv.textContent = accumulatedText;
+                            
+                            // Добавляем курсор в конец сообщения
+                            const cursor = document.createElement('div');
+                            cursor.className = 'typing-cursor';
+                            contentDiv.appendChild(cursor);
+                            
+                            // Прокручиваем историю к последнему сообщению
+                            historyDiv.scrollTop = historyDiv.scrollHeight;
+                        }
+                    }
+                } catch (error) {
+                    console.error('Ошибка при обработке потокового ответа:', error, event.data);
+                    
+                    try {
+                        // Пробуем восстановить частичный JSON
+                        partialJSON += event.data;
+                        const parsedData = JSON.parse(partialJSON);
+                        
+                        if (parsedData.choices && parsedData.choices.length > 0) {
+                            const delta = parsedData.choices[0].delta;
+                            
+                            if (delta && delta.content) {
+                                const deltaContent = delta.content;
+                                accumulatedText += deltaContent;
+                                
+                                // Обновляем содержимое сообщения
+                                const contentDiv = streamingResponseDiv.querySelector('.message-content');
+                                contentDiv.textContent = accumulatedText;
+                                
+                                // Добавляем курсор в конец сообщения
+                                const cursor = document.createElement('div');
+                                cursor.className = 'typing-cursor';
+                                contentDiv.appendChild(cursor);
+                                
+                                // Прокручиваем историю к последнему сообщению
+                                historyDiv.scrollTop = historyDiv.scrollHeight;
+                            }
+                        }
+                        
+                        // Сбрасываем частичный JSON
+                        partialJSON = '';
+                    } catch {
+                        // Если не удалось восстановить JSON, просто добавляем текст
+                        console.warn('Не удалось восстановить JSON, добавляем текст напрямую');
+                        try {
+                            accumulatedText += event.data;
+                            
+                            // Обновляем содержимое сообщения
+                            const contentDiv = streamingResponseDiv.querySelector('.message-content');
+                            contentDiv.textContent = accumulatedText;
+                            
+                            // Добавляем курсор в конец сообщения
+                            const cursor = document.createElement('div');
+                            cursor.className = 'typing-cursor';
+                            contentDiv.appendChild(cursor);
+                            
+                            // Прокручиваем историю к последнему сообщению
+                            historyDiv.scrollTop = historyDiv.scrollHeight;
+                        } catch (updateError) {
+                            console.error('Ошибка при обновлении сообщения:', updateError);
+                        }
+                    }
+                }
+            };
+            
+            // Обработчик ошибок
+            evtSource.onerror = function(error) {
+                console.error('Ошибка EventSource:', error);
+                
+                // Проверяем состояние соединения
+                if (evtSource.readyState === EventSource.CLOSED) {
+                    console.log('Соединение закрыто');
+                } else if (evtSource.readyState === EventSource.CONNECTING) {
+                    console.log('Попытка повторного подключения...');
+                    // Ждем автоматического повторного подключения
+                    return;
+                }
+                
+                statusDiv.className = 'status-indicator status-error';
+                statusDiv.textContent = 'Ошибка при получении потокового ответа';
+                
+                // Закрываем соединение
+                evtSource.close();
+                currentStreamSource = null;
+                
+                // Сбрасываем состояние потока
+                cleanupAfterStreaming();
+                
+                // Если ответ хотя бы частично получен, форматируем его
+                if (accumulatedText.length > 0) {
+                    completeStreaming(streamingResponseDiv);
+                } else {
+                    // Если ответ не получен, показываем сообщение об ошибке и предлагаем переключиться на обычный режим
+                    const contentDiv = streamingResponseDiv.querySelector('.message-content');
+                    contentDiv.innerHTML = `
+                        <div class="error-message">
+                            Ошибка при получении потокового ответа. 
+                            Возможно, проблема с соединением или сервером. 
+                            Попробуйте <button type="button" onclick="toggleStreamingMode(false)" class="retry-btn">отключить потоковый режим</button> и повторить запрос.
+                        </div>
+                    `;
+                }
+            };
+            
+            // Очищаем поле ввода
+            messageInput.value = '';
+        }
+        
+        // Функция для завершения потокового ответа
+        function completeStreaming(responseDiv) {
             const statusDiv = document.getElementById('status');
             
-            // Форматирование полученного ответа
-            const rawResponse = responseDiv.innerHTML;
-            responseDiv.innerHTML = marked.parse(rawResponse);
-            
-            // Добавляем класс для анимации
-            responseDiv.classList.add('fade-in');
-            
-            // Подсвечиваем код
-            responseDiv.querySelectorAll('pre code').forEach((block) => {
-                hljs.highlightElement(block);
-            });
-            
-            // Обрабатываем LaTeX
-            if (window.MathJax) {
-                MathJax.typesetPromise([responseDiv]).catch((err) => console.log('MathJax error:', err));
+            try {
+                // Получаем содержимое сообщения и применяем форматирование Markdown
+                const messageContentDiv = responseDiv.querySelector('.message-content');
+                const content = messageContentDiv.textContent;
+                
+                // Удаляем элемент typing-cursor, если он есть
+                const cursor = messageContentDiv.querySelector('.typing-cursor');
+                if (cursor) {
+                    cursor.remove();
+                }
+                
+                // Применяем Markdown к содержимому
+                messageContentDiv.innerHTML = marked.parse(content);
+                
+                // Применяем подсветку синтаксиса для блоков кода
+                applyHighlightToCodeBlocks(messageContentDiv);
+                
+                // Рендерим LaTeX формулы, если они есть
+                if (typeof MathJax !== 'undefined') {
+                    MathJax.typesetPromise([messageContentDiv]).catch(function (err) {
+                        console.error('Ошибка при рендеринге LaTeX:', err);
+                    });
+                }
+            } catch (error) {
+                console.error('Ошибка при форматировании ответа:', error);
             }
             
             // Показываем статус успеха
@@ -703,157 +978,239 @@
             // Очищаем состояние потока
             cleanupAfterStreaming();
             
-            // Добавляем время ответа
-            if (startTime) {
-                const elapsed = Math.floor((Date.now() - startTime) / 1000);
-                const minutes = Math.floor(elapsed / 60);
-                const seconds = elapsed % 60;
-                const timeStr = minutes > 0 ? 
-                    `${minutes}м ${seconds}с` : 
-                    `${seconds}с`;
-                
-                const timeDiv = document.createElement('div');
-                timeDiv.className = 'response-time';
-                timeDiv.textContent = `Время ответа: ${timeStr}`;
-                responseDiv.appendChild(timeDiv);
-            }
+            // Обновляем счетчик сообщений
+            updateMessageCount();
             
-            // Прокручиваем к ответу
-            responseDiv.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-            
-            // Обновляем страницу для отображения обновленной истории
-            setTimeout(() => {
-                window.location.reload();
-            }, 1000);
+            // Прокручиваем к последнему сообщению
+            historyDiv.scrollTop = historyDiv.scrollHeight;
         }
         
-        // Очистка после стриминга
+        // Обработка ответа от сервера (для обычного режима)
+        function handleResponse(data) {
+            const assistantMessageDiv = document.querySelector('.message-assistant:last-child');
+            const messageContentDiv = assistantMessageDiv.querySelector('.message-content');
+            
+            try {
+                // Применяем Markdown к содержимому
+                messageContentDiv.innerHTML = marked.parse(data);
+                
+                // Применяем подсветку синтаксиса для блоков кода
+                applyHighlightToCodeBlocks(messageContentDiv);
+                
+                // Рендерим LaTeX формулы, если они есть
+                if (typeof MathJax !== 'undefined') {
+                    MathJax.typesetPromise([messageContentDiv]).catch(function (err) {
+                        console.error('Ошибка при рендеринге LaTeX:', err);
+                    });
+                }
+            } catch (error) {
+                console.error('Ошибка при форматировании ответа:', error);
+                messageContentDiv.innerHTML = `<pre>${data}</pre>`;
+            }
+            
+            isWaitingForResponse = false;
+            updateUIState();
+            
+            // Обновляем время ответа
+            const endTime = new Date();
+            const responseTime = (endTime - startTime) / 1000;
+            document.getElementById('response-time').textContent = `${responseTime.toFixed(2)} сек`;
+            
+            // Прокручиваем историю к последнему сообщению
+            historyDiv.scrollTop = historyDiv.scrollHeight;
+        }
+        
+        // Функция обновления счетчика сообщений
+        function updateMessageCount() {
+            const countSpan = document.getElementById('message-count');
+            const messages = document.querySelectorAll('.message');
+            countSpan.textContent = `Сообщений в истории: ${messages.length}`;
+        }
+        
+        // Функция очистки после потокового ответа
         function cleanupAfterStreaming() {
-            const submitBtn = document.getElementById('submit-btn');
-            const messageInput = document.getElementById('message-input');
+            // Отключаем кнопку отмены
+            document.getElementById('cancel-stream-btn').disabled = true;
             
-            // Сбрасываем контроллер
-            streamController = null;
+            // Сбрасываем флаг ожидания ответа
+            isWaitingForResponse = false;
             
-            // Снимаем метку стриминга
-            document.body.classList.remove('streaming');
+            // Обновляем состояние интерфейса
+            updateUIState();
             
-            // Включаем элементы формы
-            submitBtn.disabled = false;
-            messageInput.disabled = false;
+            // Сбрасываем текущий источник событий
+            if (currentStreamSource) {
+                currentStreamSource.close();
+                currentStreamSource = null;
+            }
+            
+            // Сбрасываем идентификатор текущего ответа
+            currentStreamingResponseId = null;
+            
+            // Обновляем время ответа
+            if (startTime) {
+                const endTime = new Date();
+                const responseTime = (endTime - startTime) / 1000;
+                document.getElementById('response-time').textContent = `${responseTime.toFixed(2)} сек`;
+                startTime = null;
+            }
+        }
+        
+        // Обработчик обычного запроса
+        function handleRegularRequest(message) {
+            isWaitingForResponse = true;
+            updateUIState();
+            
+            // Добавляем сообщение пользователя в историю
+            addUserMessageToHistory(message);
+            
+            // Добавляем блок для ответа ассистента
+            const assistantMessageDiv = document.createElement('div');
+            assistantMessageDiv.className = 'message message-assistant';
+            assistantMessageDiv.innerHTML = `
+                <div class="message-role">Ассистент</div>
+                <div class="message-content"><div class="typing-cursor"></div></div>
+            `;
+            historyDiv.appendChild(assistantMessageDiv);
+            
+            // Прокручиваем историю к последнему сообщению
+            historyDiv.scrollTop = historyDiv.scrollHeight;
+            
+            // Отправляем запрос на сервер
+            startTime = new Date();
+            
+            fetch('/query', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    message: message,
+                    stream: false
+                })
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error('Ошибка сети: ' + response.status);
+                }
+                return response.json();
+            })
+            .then(data => {
+                // Обработка успешного ответа
+                handleResponse(data.response);
+            })
+            .catch(error => {
+                // Обработка ошибки
+                console.error('Ошибка:', error);
+                const messageContent = assistantMessageDiv.querySelector('.message-content');
+                messageContent.innerHTML = `<div class="error-message">Произошла ошибка: ${error.message}</div>`;
+                
+                isWaitingForResponse = false;
+                updateUIState();
+            });
             
             // Очищаем поле ввода
             messageInput.value = '';
             
-            // Останавливаем таймер
-            if (timerInterval) {
-                clearInterval(timerInterval);
-                timerInterval = null;
-            }
-            
-            startTime = null;
+            // Обновляем счетчик сообщений
+            updateMessageCount();
         }
         
-        // Обработка обычного запроса
-        function handleRegularRequest(message) {
-            const formData = new FormData();
-            formData.append('message', message);
-            
-            fetch('/chat', {
-                method: 'POST',
-                body: formData
-            })
-            .then(response => {
-                if (!response.ok) {
-                    return response.text().then(text => {
-                        throw new Error(text || `Ошибка сервера: ${response.status}`);
-                    });
-                }
-                return response.text();
-            })
-            .then(data => {
-                const responseDiv = document.getElementById('response');
+        // Функция для отмены потокового запроса
+        function cancelStream() {
+            // Проверяем, есть ли активный источник событий
+            if (currentStreamSource) {
+                // Закрываем соединение
+                currentStreamSource.close();
+                currentStreamSource = null;
+                
+                // Показываем статус отмены
                 const statusDiv = document.getElementById('status');
-                
-                // Преобразуем ответ в Markdown
-                const decodedResponse = new DOMParser().parseFromString(data, 'text/html').documentElement.textContent;
-                responseDiv.innerHTML = marked.parse(decodedResponse);
-                responseDiv.classList.add('fade-in');
-                
-                // Добавляем время ответа
-                const timeDiv = document.createElement('div');
-                timeDiv.className = 'response-time';
-                const elapsed = Math.floor((Date.now() - startTime) / 1000);
-                const minutes = Math.floor(elapsed / 60);
-                const seconds = elapsed % 60;
-                const timeStr = minutes > 0 ? 
-                    `${minutes}м ${seconds}с` : 
-                    `${seconds}с`;
-                timeDiv.textContent = `Время ответа: ${timeStr}`;
-                responseDiv.appendChild(timeDiv);
-                
-                // Подсвечиваем код
-                responseDiv.querySelectorAll('pre code').forEach((block) => {
-                    hljs.highlightElement(block);
-                });
-                
-                // Обрабатываем LaTeX
-                if (window.MathJax) {
-                    MathJax.typesetPromise([responseDiv]).catch((err) => console.log('MathJax error:', err));
-                }
-                
-                statusDiv.className = 'status-indicator status-success';
-                statusDiv.textContent = 'Ответ успешно получен';
+                statusDiv.className = 'status-indicator status-warning';
+                statusDiv.textContent = 'Запрос отменен пользователем';
                 statusDiv.style.display = 'block';
                 
-                // Включаем форму и очищаем поле ввода
-                document.getElementById('submit-btn').disabled = false;
-                const messageInput = document.getElementById('message-input');
-                messageInput.disabled = false;
-                messageInput.value = '';
+                // Очищаем состояние потока
+                cleanupAfterStreaming();
                 
-                // Останавливаем таймер
-                if (timerInterval) {
-                    clearInterval(timerInterval);
-                    timerInterval = null;
+                // Находим и обновляем блок ответа ассистента
+                if (currentStreamingResponseId) {
+                    const streamingResponseDiv = document.getElementById(currentStreamingResponseId);
+                    if (streamingResponseDiv) {
+                        const contentDiv = streamingResponseDiv.querySelector('.message-content');
+                        if (contentDiv) {
+                            // Удаляем курсор, если есть
+                            const cursor = contentDiv.querySelector('.typing-cursor');
+                            if (cursor) {
+                                cursor.remove();
+                            }
+                            
+                            // Добавляем метку отмены
+                            contentDiv.innerHTML += '<div class="cancel-message">[Запрос отменен пользователем]</div>';
+                        }
+                    }
                 }
-                
-                startTime = null;
-                
-                // Прокрутка к ответу
-                responseDiv.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-                
-                // Обновляем страницу для отображения обновленной истории
-                setTimeout(() => {
-                    window.location.reload();
-                }, 1000);
+            }
+        }
+        
+        // Функция обновления состояния интерфейса
+        function updateUIState() {
+            const submitBtn = document.getElementById('submit-btn');
+            const messageInput = document.getElementById('message-input');
+            const cancelStreamBtn = document.getElementById('cancel-stream-btn');
+            
+            // Обновляем состояние кнопок и полей ввода
+            submitBtn.disabled = isWaitingForResponse;
+            messageInput.disabled = isWaitingForResponse;
+            
+            // Показываем/скрываем кнопку отмены в зависимости от состояния
+            if (isWaitingForResponse && isStreaming) {
+                cancelStreamBtn.style.display = 'inline-block';
+                submitBtn.style.display = 'none';
+            } else {
+                cancelStreamBtn.style.display = 'none';
+                submitBtn.style.display = 'inline-block';
+            }
+        }
+        
+        // Функция для переключения режима потоковой передачи
+        function toggleStreamingMode(enable) {
+            isStreaming = enable;
+            const streamToggle = document.getElementById('stream-toggle');
+            streamToggle.classList.toggle('active', isStreaming);
+            streamToggle.textContent = isStreaming ? 'Стриминг: вкл' : 'Стриминг: выкл';
+        }
+        
+        // Функция для проверки статуса API
+        function checkAPIStatus() {
+            const statusDiv = document.getElementById('status');
+            
+            // Показываем статус загрузки
+            statusDiv.className = 'status-indicator status-loading';
+            statusDiv.textContent = 'Проверка соединения с API...';
+            statusDiv.style.display = 'block';
+            
+            fetch('/api-status')
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === 'ok') {
+                    statusDiv.className = 'status-indicator status-success';
+                    statusDiv.textContent = 'API готов к работе';
+                    
+                    // Скрываем статус через 5 секунд
+                    setTimeout(() => {
+                        statusDiv.style.display = 'none';
+                    }, 5000);
+                } else {
+                    statusDiv.className = 'status-indicator status-error';
+                    statusDiv.textContent = 'Проблема с API: ' + data.message;
+                    console.error('Проблема с API:', data.message);
+                }
             })
             .catch(error => {
-                const responseDiv = document.getElementById('response');
-                const statusDiv = document.getElementById('status');
-                
-                const errorDiv = document.createElement('div');
-                errorDiv.className = 'error';
-                errorDiv.textContent = error.message;
-                responseDiv.innerHTML = '';
-                responseDiv.appendChild(errorDiv);
-                
                 statusDiv.className = 'status-indicator status-error';
-                statusDiv.textContent = 'Произошла ошибка при выполнении запроса';
-                statusDiv.style.display = 'block';
-                
-                // Включаем форму
-                document.getElementById('submit-btn').disabled = false;
-                const messageInput = document.getElementById('message-input');
-                messageInput.disabled = false;
-                
-                // Останавливаем таймер
-                if (timerInterval) {
-                    clearInterval(timerInterval);
-                    timerInterval = null;
-                }
-                
-                startTime = null;
+                statusDiv.textContent = 'Ошибка при проверке API: ' + error.message;
+                console.error('Ошибка при проверке API:', error);
             });
         }
     </script>
