@@ -27,6 +27,8 @@
 
 ## Установка
 
+### Локальный запуск
+
 1. Клонируйте репозиторий:
 ```bash
 git clone https://github.com/memrook/OpenRouterWebAPI-golang.git
@@ -44,6 +46,56 @@ go run main.go
 ```
 
 4. Откройте браузер и перейдите по адресу `http://localhost:8080`
+
+### Запуск с использованием Docker
+
+1. Клонируйте репозиторий:
+```bash
+git clone https://github.com/memrook/OpenRouterWebAPI-golang.git
+cd OpenRouterWebAPI-golang
+```
+
+2. Соберите Docker-образ:
+```bash
+docker build -t openrouter-web-api .
+```
+
+3. Запустите контейнер с указанием вашего API ключа:
+```bash
+docker run -p 8080:8080 -e OPENROUTER_API_KEY="your_api_key_here" openrouter-web-api
+```
+
+4. Откройте браузер и перейдите по адресу `http://localhost:8080`
+
+#### Дополнительные опции Docker
+
+- Изменение порта:
+```bash
+docker run -p 3000:8080 -e OPENROUTER_API_KEY="your_api_key_here" openrouter-web-api
+```
+
+- Запуск контейнера в фоновом режиме:
+```bash
+docker run -d -p 8080:8080 -e OPENROUTER_API_KEY="your_api_key_here" openrouter-web-api
+```
+
+- Использование Docker Compose (создайте файл docker-compose.yml):
+```yaml
+version: '3'
+services:
+  app:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      - OPENROUTER_API_KEY=your_api_key_here
+    restart: unless-stopped
+```
+
+И запустите:
+```bash
+docker-compose up -d
+```
 
 ## Конфигурация
 
@@ -84,7 +136,51 @@ OpenRouterWebAPI-golang/
 ├── main.go           # Основной код сервера
 ├── templates/        # HTML шаблоны и статические файлы
 │   └── index.html    # Основной шаблон интерфейса
+├── Dockerfile        # Инструкции для сборки Docker-образа
 └── README.md         # Документация проекта
+```
+
+## Развертывание на удаленном сервере
+
+### Используя Docker
+
+1. Загрузите свой Docker-образ в реестр (Docker Hub, GitHub Container Registry и т.д.):
+```bash
+docker tag openrouter-web-api yourusername/openrouter-web-api:latest
+docker push yourusername/openrouter-web-api:latest
+```
+
+2. На удаленном сервере выполните:
+```bash
+docker pull yourusername/openrouter-web-api:latest
+docker run -d -p 80:8080 -e OPENROUTER_API_KEY="your_api_key_here" --restart unless-stopped yourusername/openrouter-web-api:latest
+```
+
+### Используя systemd (без Docker)
+
+1. Скопируйте файлы на сервер
+2. Создайте systemd сервис `/etc/systemd/system/openrouter-web-api.service`:
+```
+[Unit]
+Description=OpenRouter Web API
+After=network.target
+
+[Service]
+User=yourusername
+WorkingDirectory=/path/to/OpenRouterWebAPI-golang
+ExecStart=/path/to/OpenRouterWebAPI-golang/openrouter-web-api
+Environment="OPENROUTER_API_KEY=your_api_key_here"
+Environment="PORT=80"
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+```
+
+3. Включите и запустите сервис:
+```bash
+sudo systemctl enable openrouter-web-api
+sudo systemctl start openrouter-web-api
 ```
 
 ## Лицензия

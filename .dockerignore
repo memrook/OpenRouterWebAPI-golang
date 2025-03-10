@@ -1,0 +1,34 @@
+# IDE и временные файлы
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Файлы системы
+.DS_Store
+Thumbs.db
+
+# Директории и файлы Git
+.git/
+.gitignore
+
+# Логи и временные файлы
+logs/
+*.log
+/tmp
+
+# Файлы документации, не нужные для работы приложения
+README.md
+LICENSE
+CONTRIBUTING.md
+CHANGELOG.md
+
+# Настройки окружения, которые не должны попадать в образ
+.env
+
+# Docker файлы
+docker-compose*.yml
+.dockerignore
+
+# Файлы сборки и зависимостей
+vendor/ 

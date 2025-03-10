@@ -1,0 +1,20 @@
+version: '3'
+
+services:
+  app:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      # - PORT=8080  # Можно изменить, если нужен другой порт внутри контейнера
+    restart: unless-stopped
+    volumes:
+      - ./templates:/app/templates
+    # Можно добавить healthcheck для проверки работоспособности
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/api-status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s 
