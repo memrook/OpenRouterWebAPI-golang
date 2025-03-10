@@ -510,6 +510,42 @@
         .refresh-models-btn svg {
             fill: white;
         }
+        
+        /* Стили для кнопки копирования */
+        .copy-btn {
+            position: absolute;
+            bottom: 5px;
+            right: 5px;
+            background-color: #f0f0f0;
+            color: #333;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 3px 8px;
+            font-size: 12px;
+            cursor: pointer;
+            opacity: 0.7;
+            transition: opacity 0.2s, background-color 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            min-width: auto;
+        }
+        .copy-btn:hover {
+            opacity: 1;
+            background-color: #e8e8e8;
+        }
+        .copy-btn svg {
+            width: 14px;
+            height: 14px;
+        }
+        .message-assistant {
+            position: relative;
+        }
+        .copy-success {
+            background-color: #d4edda !important;
+            color: #155724 !important;
+            border-color: #c3e6cb !important;
+        }
     </style>
 </head>
 <body>
@@ -541,7 +577,7 @@
         <div id="conversation-history" class="conversation-history">
             {{if .Messages}}
                 {{range .Messages}}
-                    <div class="message {{if eq .Role "user"}}message-user{{else}}message-assistant{{end}}">
+                    <div class="message {{if eq .Role "user"}}message-user{{else}}message-assistant{{end}}" {{if eq .Role "assistant"}}id="history-assistant-{{$.CurrentModel}}-{{.Content | len}}"{{end}}>
                         <div class="message-role">
                             {{if eq .Role "user"}}
                                 Вы
@@ -552,7 +588,16 @@
                                 {{end}}
                             {{end}}
                         </div>
-                        <div class="message-content">{{.Content}}</div>
+                        <div class="message-content" {{if eq .Role "assistant"}}data-original-text="{{.Content}}"{{end}}>{{.Content}}</div>
+                        {{if eq .Role "assistant"}}
+                        <button class="copy-btn" onclick="copyMessageText('history-assistant-{{$.CurrentModel}}-{{.Content | len}}')">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
+                                <path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/>
+                                <path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5h3zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0h-3z"/>
+                            </svg>
+                            Копировать
+                        </button>
+                        {{end}}
                     </div>
                 {{end}}
             {{else}}
@@ -636,6 +681,9 @@
             
             // Загружаем доступные модели
             loadAvailableModels();
+            
+            // Добавляем кнопки копирования к существующим сообщениям ассистента
+            addCopyButtonsToExistingMessages();
             
             // Обработчик изменения модели
             modelSelector.addEventListener('change', function() {
@@ -1045,6 +1093,9 @@
                     cursor.remove();
                 }
                 
+                // Сохраняем исходный текст для копирования
+                messageContentDiv.setAttribute('data-original-text', content);
+                
                 // Применяем Markdown к содержимому
                 messageContentDiv.innerHTML = marked.parse(content);
                 
@@ -1056,6 +1107,30 @@
                     MathJax.typesetPromise([messageContentDiv]).catch(function (err) {
                         console.error('Ошибка при рендеринге LaTeX:', err);
                     });
+                }
+                
+                // Проверяем, есть ли уже кнопка копирования, и если нет - добавляем её
+                if (!responseDiv.querySelector('.copy-btn')) {
+                    // Убедимся, что у div есть ID
+                    if (!responseDiv.id) {
+                        responseDiv.id = 'assistant-message-' + Date.now();
+                    }
+                    
+                    // Создаем кнопку копирования
+                    const copyBtn = document.createElement('button');
+                    copyBtn.className = 'copy-btn';
+                    copyBtn.innerHTML = `
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
+                            <path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/>
+                            <path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5h3zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0h-3z"/>
+                        </svg>
+                        Копировать
+                    `;
+                    copyBtn.onclick = function() {
+                        copyMessageText(responseDiv.id);
+                    };
+                    
+                    responseDiv.appendChild(copyBtn);
                 }
             } catch (error) {
                 console.error('Ошибка при форматировании ответа:', error);
@@ -1082,6 +1157,9 @@
             const messageContentDiv = assistantMessageDiv.querySelector('.message-content');
             
             try {
+                // Сохраняем исходный текст для копирования
+                messageContentDiv.setAttribute('data-original-text', data);
+                
                 // Применяем Markdown к содержимому
                 messageContentDiv.innerHTML = marked.parse(data);
                 
@@ -1093,6 +1171,30 @@
                     MathJax.typesetPromise([messageContentDiv]).catch(function (err) {
                         console.error('Ошибка при рендеринге LaTeX:', err);
                     });
+                }
+                
+                // Проверяем, есть ли уже кнопка копирования, и если нет - добавляем её
+                if (!assistantMessageDiv.querySelector('.copy-btn')) {
+                    // Убедимся, что у div есть ID
+                    if (!assistantMessageDiv.id) {
+                        assistantMessageDiv.id = 'assistant-message-' + Date.now();
+                    }
+                    
+                    // Создаем кнопку копирования
+                    const copyBtn = document.createElement('button');
+                    copyBtn.className = 'copy-btn';
+                    copyBtn.innerHTML = `
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
+                            <path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/>
+                            <path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5h3zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0h-3z"/>
+                        </svg>
+                        Копировать
+                    `;
+                    copyBtn.onclick = function() {
+                        copyMessageText(assistantMessageDiv.id);
+                    };
+                    
+                    assistantMessageDiv.appendChild(copyBtn);
                 }
             } catch (error) {
                 console.error('Ошибка при форматировании ответа:', error);
@@ -1414,6 +1516,95 @@
                 }
             }
             return modelId; // Возвращаем ID, если название не найдено
+        }
+
+        // Функция для копирования текста сообщения
+        function copyMessageText(messageId) {
+            const messageDiv = document.getElementById(messageId);
+            if (!messageDiv) return;
+            
+            const messageContent = messageDiv.querySelector('.message-content');
+            const copyBtn = messageDiv.querySelector('.copy-btn');
+            
+            if (!messageContent) return;
+            
+            // Получаем исходный текст (без HTML)
+            const originalText = messageContent.getAttribute('data-original-text') || messageContent.textContent;
+            
+            // Копируем текст в буфер обмена
+            navigator.clipboard.writeText(originalText)
+                .then(() => {
+                    // Визуальное подтверждение успешного копирования
+                    copyBtn.innerHTML = `
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
+                            <path d="M12.736 3.97a.733.733 0 0 1 1.047 0c.286.289.29.756.01 1.05L7.88 12.01a.733.733 0 0 1-1.065.02L3.217 8.384a.757.757 0 0 1 0-1.06.733.733 0 0 1 1.047 0l3.052 3.093 5.4-6.425a.247.247 0 0 1 .02-.022Z"/>
+                        </svg>
+                        Скопировано!
+                    `;
+                    copyBtn.classList.add('copy-success');
+                    
+                    // Возвращаем исходный вид кнопки через 2 секунды
+                    setTimeout(() => {
+                        copyBtn.innerHTML = `
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
+                                <path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/>
+                                <path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5h3zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0h-3z"/>
+                            </svg>
+                            Копировать
+                        `;
+                        copyBtn.classList.remove('copy-success');
+                    }, 2000);
+                })
+                .catch(err => {
+                    console.error('Ошибка при копировании текста:', err);
+                    copyBtn.textContent = 'Ошибка копирования';
+                    setTimeout(() => {
+                        copyBtn.innerHTML = `
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
+                                <path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/>
+                                <path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5h3zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0h-3z"/>
+                            </svg>
+                            Копировать
+                        `;
+                    }, 2000);
+                });
+        }
+        
+        // Функция для добавления кнопки копирования к существующим сообщениям ассистента
+        function addCopyButtonsToExistingMessages() {
+            const assistantMessages = document.querySelectorAll('.message-assistant');
+            assistantMessages.forEach((message, index) => {
+                // Проверяем, есть ли уже кнопка копирования
+                if (!message.querySelector('.copy-btn')) {
+                    // Задаем ID сообщению, если его нет
+                    if (!message.id) {
+                        message.id = 'assistant-message-' + index;
+                    }
+                    
+                    // Создаем кнопку копирования
+                    const copyBtn = document.createElement('button');
+                    copyBtn.className = 'copy-btn';
+                    copyBtn.innerHTML = `
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
+                            <path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/>
+                            <path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5h3zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0h-3z"/>
+                        </svg>
+                        Копировать
+                    `;
+                    copyBtn.onclick = function() {
+                        copyMessageText(message.id);
+                    };
+                    
+                    // Сохраняем исходный текст сообщения для копирования
+                    const contentDiv = message.querySelector('.message-content');
+                    if (contentDiv) {
+                        contentDiv.setAttribute('data-original-text', contentDiv.textContent);
+                    }
+                    
+                    // Добавляем кнопку к сообщению
+                    message.appendChild(copyBtn);
+                }
+            });
         }
     </script>
 </body>
