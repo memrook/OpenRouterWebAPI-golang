@@ -1,3 +1,3 @@
-module DeepSeekWebAPI
+module OpenRouterWebAPI
 
 go 1.21
