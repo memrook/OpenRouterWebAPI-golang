@@ -59,8 +59,18 @@ var conversationHistory = ConversationHistory{
 	Messages: []Message{},
 }
 
-// Модель AI
-const model = "google/gemini-2.0-flash-lite-preview-02-05:free"
+// Модель AI по умолчанию
+var currentModel = "google/gemini-2.0-flash-lite-preview-02-05:free"
+
+// Доступные модели
+var availableModels = []struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}{
+	{"google/gemini-2.0-flash-lite-preview-02-05:free", "Google: Gemini Flash Lite 2.0 Preview (free)"},
+	{"deepseek/deepseek-r1-zero:free", "DeepSeek: DeepSeek R1 Zero"},
+	{"qwen/qwq-32b:free", "Qwen: QwQ 32B"},
+}
 
 func enableCors(w *http.ResponseWriter) {
 	(*w).Header().Set("Access-Control-Allow-Origin", "*")
@@ -86,6 +96,8 @@ func main() {
 	http.HandleFunc("/stream", handleStream)
 	http.HandleFunc("/reset", handleReset)
 	http.HandleFunc("/api-status", handleAPIStatus)
+	http.HandleFunc("/models", handleGetModels)   // Получение списка моделей
+	http.HandleFunc("/set-model", handleSetModel) // Установка текущей модели
 	http.Handle("/templates/", http.StripPrefix("/templates/", http.FileServer(http.Dir("templates"))))
 
 	log.Println("Сервер запущен на http://localhost:" + port)
@@ -93,16 +105,29 @@ func main() {
 }
 
 func handleHome(w http.ResponseWriter, r *http.Request) {
-	tmpl := template.Must(template.ParseFiles("templates/index.html"))
+	enableCors(&w)
 
-	// Передаем историю сообщений в шаблон
-	conversationHistory.Lock()
-	data := map[string]interface{}{
-		"Messages": conversationHistory.Messages,
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+
+	tmpl, err := template.ParseFiles("templates/index.html")
+	if err != nil {
+		http.Error(w, "Ошибка загрузки шаблона: "+err.Error(), http.StatusInternalServerError)
+		return
 	}
-	conversationHistory.Unlock()
 
-	tmpl.Execute(w, data)
+	// Подготавливаем данные для шаблона
+	templateData := struct {
+		Messages     []Message
+		CurrentModel string
+	}{
+		Messages:     conversationHistory.Messages,
+		CurrentModel: currentModel,
+	}
+
+	err = tmpl.Execute(w, templateData)
+	if err != nil {
+		http.Error(w, "Ошибка рендеринга шаблона: "+err.Error(), http.StatusInternalServerError)
+	}
 }
 
 // Обработчик сброса истории
@@ -218,7 +243,7 @@ func handleStream(w http.ResponseWriter, r *http.Request) {
 	conversationHistory.Unlock()
 
 	reqBody := DeepseekRequest{
-		Model:       model,
+		Model:       currentModel,
 		Messages:    messagesCopy,
 		Temperature: 1,
 		Stream:      true, // Включаем стриминг
@@ -379,7 +404,7 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 	conversationHistory.Unlock()
 
 	reqBody := DeepseekRequest{
-		Model:       model,
+		Model:       currentModel,
 		Messages:    messagesCopy,
 		Temperature: 1,
 	}
@@ -507,4 +532,84 @@ func handleAPIStatus(w http.ResponseWriter, r *http.Request) {
 		"status":  "ok",
 		"message": "API работает нормально",
 	})
+}
+
+// Обработчик для получения списка доступных моделей
+func handleGetModels(w http.ResponseWriter, r *http.Request) {
+	enableCors(&w)
+
+	w.Header().Set("Content-Type", "application/json")
+
+	// Подготавливаем ответ с текущей моделью и списком доступных моделей
+	response := struct {
+		CurrentModel string `json:"currentModel"`
+		Models       []struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"models"`
+	}{
+		CurrentModel: currentModel,
+		Models:       availableModels,
+	}
+
+	// Отправляем ответ
+	json.NewEncoder(w).Encode(response)
+}
+
+// Обработчик для установки текущей модели
+func handleSetModel(w http.ResponseWriter, r *http.Request) {
+	enableCors(&w)
+
+	if r.Method == http.MethodOptions {
+		return
+	}
+
+	if r.Method != http.MethodPost {
+		http.Error(w, "Метод не поддерживается", http.StatusMethodNotAllowed)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+
+	// Декодируем запрос
+	var requestData struct {
+		ModelID string `json:"modelId"`
+	}
+
+	err := json.NewDecoder(r.Body).Decode(&requestData)
+	if err != nil {
+		http.Error(w, "Некорректный формат запроса", http.StatusBadRequest)
+		return
+	}
+
+	// Проверяем, существует ли модель в списке доступных
+	modelExists := false
+	for _, model := range availableModels {
+		if model.ID == requestData.ModelID {
+			modelExists = true
+			break
+		}
+	}
+
+	if !modelExists {
+		http.Error(w, "Указанная модель не найдена", http.StatusBadRequest)
+		return
+	}
+
+	// Устанавливаем новую модель
+	currentModel = requestData.ModelID
+	log.Printf("Модель изменена на: %s", currentModel)
+
+	// Формируем успешный ответ
+	response := struct {
+		Success bool   `json:"success"`
+		Message string `json:"message"`
+		Model   string `json:"model"`
+	}{
+		Success: true,
+		Message: "Модель успешно изменена",
+		Model:   currentModel,
+	}
+
+	json.NewEncoder(w).Encode(response)
 }
