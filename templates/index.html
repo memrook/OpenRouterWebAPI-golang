@@ -8,6 +8,7 @@
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
     <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="icon" type="image/x-icon" href="/templates/deepseek.svg">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
     <style>
         body {
@@ -226,6 +227,45 @@
             font-size: 0.9em;
             color: #e83e8c;
         }
+        /* Добавляем стили для индикатора загрузки */
+        .loading-spinner {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid rgba(255,255,255,.3);
+            border-radius: 50%;
+            border-top-color: white;
+            animation: spin 1s ease-in-out infinite;
+            margin-left: 10px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Стиль для подсказки о горячих клавишах */
+        .hotkey-hint {
+            position: absolute;
+            bottom: -20px;
+            right: 0;
+            font-size: 12px;
+            color: #666;
+        }
+
+        /* Стиль для отключенной кнопки во время загрузки */
+        .submit-btn:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+
+        /* Индикатор времени ожидания */
+        .response-time {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            font-size: 12px;
+            color: #666;
+        }
     </style>
 </head>
 <body>
@@ -234,16 +274,22 @@
         <form hx-post="/chat" 
               hx-target="#response" 
               hx-swap="innerHTML"
-              hx-indicator=".loading-container">
+              hx-indicator=".loading-container"
+              hx-trigger="submit"
+              hx-on="htmx:afterRequest: messageInput.value = ''"
+              id="chat-form">
             <div class="input-container">
                 <textarea name="message" 
+                         id="message-input"
                          placeholder="Введите ваше сообщение... Поддерживается Markdown, LaTeX (например, $x^2 + y^2 = r^2$) и блоки кода (в ```)" 
                          required></textarea>
-                <button type="submit" class="submit-btn">Отправить</button>
+                <button type="submit" class="submit-btn" id="submit-btn">Отправить</button>
                 <div class="loading-container">
                     <span>Генерирую</span>
+                    <div class="loading-spinner"></div>
                     <span class="loading-dots"></span>
                 </div>
+                <div class="hotkey-hint">Cmd+Enter / Ctrl+Enter для отправки</div>
             </div>
         </form>
         <div id="response" class="response"></div>
@@ -265,15 +311,79 @@
             mangle: false
         });
 
+        let startTime = null;
+        let timerInterval = null;
+
+        function updateResponseTime() {
+            if (startTime) {
+                const elapsed = Math.floor((Date.now() - startTime) / 1000);
+                const minutes = Math.floor(elapsed / 60);
+                const seconds = elapsed % 60;
+                const timeStr = minutes > 0 ? 
+                    `${minutes}м ${seconds}с` : 
+                    `${seconds}с`;
+                
+                const responseDiv = document.getElementById('response');
+                let timeDiv = responseDiv.querySelector('.response-time');
+                if (!timeDiv) {
+                    timeDiv = document.createElement('div');
+                    timeDiv.className = 'response-time';
+                    responseDiv.appendChild(timeDiv);
+                }
+                timeDiv.textContent = `Время ответа: ${timeStr}`;
+            }
+        }
+
+        // Обработка горячих клавиш
+        document.getElementById('message-input').addEventListener('keydown', function(e) {
+            if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+                e.preventDefault();
+                const submitBtn = document.getElementById('submit-btn');
+                if (!submitBtn.disabled) {
+                    htmx.trigger('#chat-form', 'submit');
+                }
+            }
+        });
+
+        // Предотвращаем стандартную отправку формы
+        document.getElementById('chat-form').addEventListener('submit', function(e) {
+            e.preventDefault();
+            const submitBtn = document.getElementById('submit-btn');
+            if (!submitBtn.disabled) {
+                htmx.trigger(this, 'submit');
+            }
+        });
+
+        // Обработчики HTMX событий
         document.body.addEventListener('htmx:beforeRequest', function(event) {
             const statusDiv = document.getElementById('status');
+            const submitBtn = document.getElementById('submit-btn');
+            const messageInput = document.getElementById('message-input');
+            
             statusDiv.style.display = 'none';
             document.getElementById('response').classList.remove('fade-in');
+            
+            // Отключаем кнопку и поле ввода
+            submitBtn.disabled = true;
+            messageInput.disabled = true;
+            
+            // Запускаем таймер
+            startTime = Date.now();
+            timerInterval = setInterval(updateResponseTime, 1000);
         });
 
         document.body.addEventListener('htmx:afterRequest', function(event) {
             const statusDiv = document.getElementById('status');
             const responseDiv = document.getElementById('response');
+            const submitBtn = document.getElementById('submit-btn');
+            const messageInput = document.getElementById('message-input');
+            
+            // Включаем кнопку и поле ввода
+            submitBtn.disabled = false;
+            messageInput.disabled = false;
+            
+            // Останавливаем таймер
+            clearInterval(timerInterval);
             
             if (event.detail.failed) {
                 const response = event.detail.xhr.response;
@@ -288,10 +398,21 @@
             } else {
                 // Преобразуем ответ в Markdown
                 const rawResponse = responseDiv.innerHTML;
-                // Декодируем HTML-сущности
                 const decodedResponse = new DOMParser().parseFromString(rawResponse, 'text/html').documentElement.textContent;
                 responseDiv.innerHTML = marked.parse(decodedResponse);
                 responseDiv.classList.add('fade-in');
+                
+                // Добавляем время ответа
+                const timeDiv = document.createElement('div');
+                timeDiv.className = 'response-time';
+                const elapsed = Math.floor((Date.now() - startTime) / 1000);
+                const minutes = Math.floor(elapsed / 60);
+                const seconds = elapsed % 60;
+                const timeStr = minutes > 0 ? 
+                    `${minutes}м ${seconds}с` : 
+                    `${seconds}с`;
+                timeDiv.textContent = `Время ответа: ${timeStr}`;
+                responseDiv.appendChild(timeDiv);
                 
                 // Подсвечиваем код
                 responseDiv.querySelectorAll('pre code').forEach((block) => {
@@ -306,10 +427,18 @@
                 statusDiv.className = 'status-indicator status-success';
                 statusDiv.textContent = 'Ответ успешно получен';
             }
-            statusDiv.style.display = 'block';
             
-            // Прокрутка к ответу
+            statusDiv.style.display = 'block';
             responseDiv.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            
+            startTime = null;
+        });
+
+        // Обработка отмены запроса
+        document.body.addEventListener('htmx:beforeUnload', function(event) {
+            if (timerInterval) {
+                clearInterval(timerInterval);
+            }
         });
     </script>
 </body>
