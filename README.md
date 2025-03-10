@@ -29,8 +29,8 @@
 
 1. Клонируйте репозиторий:
 ```bash
-git clone https://github.com/memrook/OpenRouterWebAPI.git
-cd OpenRouterWebAPI
+git clone https://github.com/memrook/OpenRouterWebAPI-golang.git
+cd OpenRouterWebAPI-golang
 ```
 
 2. Установите переменную окружения с вашим API ключом OpenRouter:
@@ -80,7 +80,7 @@ export PORT="3000"
 ## Структура проекта
 
 ```
-OpenRouterWebAPI/
+OpenRouterWebAPI-golang/
 ├── main.go           # Основной код сервера
 ├── templates/        # HTML шаблоны и статические файлы
 │   └── index.html    # Основной шаблон интерфейса
