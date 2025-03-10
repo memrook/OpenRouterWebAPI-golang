@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Deepseek Chat</title>
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .chat-container {
+            background-color: white;
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .input-container {
+            display: flex;
+            gap: 10px;
+            margin-top: 20px;
+            position: relative;
+        }
+        textarea {
+            flex-grow: 1;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            resize: vertical;
+            min-height: 50px;
+            font-size: 16px;
+            font-family: monospace;
+        }
+        button {
+            padding: 10px 20px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            min-width: 120px;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        .response {
+            margin-top: 20px;
+            padding: 15px;
+            background-color: #f8f9fa;
+            border-radius: 5px;
+            position: relative;
+            transition: all 0.3s ease;
+            font-size: 16px;
+            line-height: 1.5;
+        }
+        .response.fade-in {
+            animation: fadeIn 0.5s ease-in;
+        }
+        .response .math {
+            margin: 10px 0;
+            padding: 10px;
+            background-color: #fff;
+            border-radius: 5px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            overflow-x: auto;
+        }
+        /* Markdown стили */
+        .response h1, .response h2, .response h3, .response h4, .response h5, .response h6 {
+            margin-top: 1.5em;
+            margin-bottom: 0.5em;
+            color: #2c3e50;
+        }
+        .response p {
+            margin: 1em 0;
+            line-height: 1.6;
+        }
+        .response ul, .response ol {
+            margin: 1em 0;
+            padding-left: 2em;
+        }
+        .response blockquote {
+            margin: 1em 0;
+            padding-left: 1em;
+            border-left: 4px solid #007bff;
+            color: #666;
+        }
+        .response a {
+            color: #007bff;
+            text-decoration: none;
+        }
+        .response a:hover {
+            text-decoration: underline;
+        }
+        .response table {
+            border-collapse: collapse;
+            margin: 1em 0;
+            width: 100%;
+        }
+        .response th, .response td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+        .response th {
+            background-color: #f8f9fa;
+        }
+        .response img {
+            max-width: 100%;
+            height: auto;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(-10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .loading-container {
+            display: none;
+            position: absolute;
+            right: 0;
+            top: 50%;
+            transform: translateY(-50%);
+            background-color: #007bff;
+            color: white;
+            padding: 10px 20px;
+            border-radius: 5px;
+            animation: pulse 1.5s infinite;
+        }
+        .htmx-request .loading-container {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .htmx-request .submit-btn {
+            display: none;
+        }
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.7; }
+            100% { opacity: 1; }
+        }
+        .loading-dots::after {
+            content: '...';
+            animation: dots 1.5s steps(4, end) infinite;
+            display: inline-block;
+            width: 1.5em;
+        }
+        @keyframes dots {
+            0%, 20% { content: '.'; }
+            40% { content: '..'; }
+            60% { content: '...'; }
+            80%, 100% { content: ''; }
+        }
+        .error {
+            color: #dc3545;
+            background-color: #f8d7da;
+            border: 1px solid #f5c6cb;
+            padding: 10px;
+            border-radius: 5px;
+            margin-top: 10px;
+            animation: shake 0.5s ease-in-out;
+        }
+        @keyframes shake {
+            0%, 100% { transform: translateX(0); }
+            10%, 30%, 50%, 70%, 90% { transform: translateX(-5px); }
+            20%, 40%, 60%, 80% { transform: translateX(5px); }
+        }
+        .status-indicator {
+            display: none;
+            padding: 8px 12px;
+            border-radius: 4px;
+            margin-top: 10px;
+            font-size: 0.9em;
+        }
+        .status-success {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .status-error {
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        /* Стили для LaTeX блоков */
+        .latex-block {
+            margin: 15px 0;
+            padding: 15px;
+            background-color: #fff;
+            border-radius: 5px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            font-size: 1.1em;
+        }
+        /* Стили для inline LaTeX */
+        .latex-inline {
+            padding: 0 5px;
+        }
+        /* Стили для блоков кода */
+        .code-block {
+            margin: 15px 0;
+            padding: 15px;
+            background-color: #282c34;
+            border-radius: 5px;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 14px;
+            line-height: 1.4;
+            overflow-x: auto;
+        }
+        .code-block code {
+            padding: 0;
+            background: none;
+            white-space: pre;
+        }
+        /* Стили для inline кода */
+        code:not(.code-block code) {
+            background-color: #f3f4f5;
+            padding: 2px 4px;
+            border-radius: 3px;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 0.9em;
+            color: #e83e8c;
+        }
+    </style>
+</head>
+<body>
+    <div class="chat-container">
+        <h1>Deepseek Chat</h1>
+        <form hx-post="/chat" 
+              hx-target="#response" 
+              hx-swap="innerHTML"
+              hx-indicator=".loading-container">
+            <div class="input-container">
+                <textarea name="message" 
+                         placeholder="Введите ваше сообщение... Поддерживается Markdown, LaTeX (например, $x^2 + y^2 = r^2$) и блоки кода (в ```)" 
+                         required></textarea>
+                <button type="submit" class="submit-btn">Отправить</button>
+                <div class="loading-container">
+                    <span>Генерирую</span>
+                    <span class="loading-dots"></span>
+                </div>
+            </div>
+        </form>
+        <div id="response" class="response"></div>
+        <div id="status" class="status-indicator"></div>
+    </div>
+
+    <script>
+        // Настройка Marked
+        marked.setOptions({
+            highlight: function(code, lang) {
+                if (lang && hljs.getLanguage(lang)) {
+                    return hljs.highlight(code, { language: lang }).value;
+                }
+                return hljs.highlightAuto(code).value;
+            },
+            breaks: true,
+            gfm: true,
+            headerIds: true,
+            mangle: false
+        });
+
+        document.body.addEventListener('htmx:beforeRequest', function(event) {
+            const statusDiv = document.getElementById('status');
+            statusDiv.style.display = 'none';
+            document.getElementById('response').classList.remove('fade-in');
+        });
+
+        document.body.addEventListener('htmx:afterRequest', function(event) {
+            const statusDiv = document.getElementById('status');
+            const responseDiv = document.getElementById('response');
+            
+            if (event.detail.failed) {
+                const response = event.detail.xhr.response;
+                const errorDiv = document.createElement('div');
+                errorDiv.className = 'error';
+                errorDiv.textContent = response;
+                responseDiv.innerHTML = '';
+                responseDiv.appendChild(errorDiv);
+                
+                statusDiv.className = 'status-indicator status-error';
+                statusDiv.textContent = 'Произошла ошибка при выполнении запроса';
+            } else {
+                // Преобразуем ответ в Markdown
+                const rawResponse = responseDiv.innerHTML;
+                // Декодируем HTML-сущности
+                const decodedResponse = new DOMParser().parseFromString(rawResponse, 'text/html').documentElement.textContent;
+                responseDiv.innerHTML = marked.parse(decodedResponse);
+                responseDiv.classList.add('fade-in');
+                
+                // Подсвечиваем код
+                responseDiv.querySelectorAll('pre code').forEach((block) => {
+                    hljs.highlightElement(block);
+                });
+                
+                // Обрабатываем LaTeX
+                if (window.MathJax) {
+                    MathJax.typesetPromise([responseDiv]).catch((err) => console.log('MathJax error:', err));
+                }
+                
+                statusDiv.className = 'status-indicator status-success';
+                statusDiv.textContent = 'Ответ успешно получен';
+            }
+            statusDiv.style.display = 'block';
+            
+            // Прокрутка к ответу
+            responseDiv.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        });
+    </script>
+</body>
+</html> 
