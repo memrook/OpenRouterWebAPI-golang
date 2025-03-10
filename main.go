@@ -11,6 +11,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 )
 
 type Message struct {
@@ -35,6 +36,17 @@ type DeepseekResponse struct {
 	} `json:"choices"`
 }
 
+// Структура для истории переписки
+type ConversationHistory struct {
+	sync.Mutex
+	Messages []Message
+}
+
+// Глобальная переменная для хранения истории
+var conversationHistory = ConversationHistory{
+	Messages: []Message{},
+}
+
 func enableCors(w *http.ResponseWriter) {
 	(*w).Header().Set("Access-Control-Allow-Origin", "*")
 	(*w).Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
@@ -44,6 +56,8 @@ func enableCors(w *http.ResponseWriter) {
 func main() {
 	http.HandleFunc("/", handleHome)
 	http.HandleFunc("/chat", handleChat)
+	http.HandleFunc("/reset", handleReset)
+	http.Handle("/templates/", http.StripPrefix("/templates/", http.FileServer(http.Dir("templates"))))
 
 	log.Println("Сервер запущен на http://localhost:8080")
 	log.Fatal(http.ListenAndServe(":8080", nil))
@@ -51,7 +65,25 @@ func main() {
 
 func handleHome(w http.ResponseWriter, r *http.Request) {
 	tmpl := template.Must(template.ParseFiles("templates/index.html"))
-	tmpl.Execute(w, nil)
+
+	// Передаем историю сообщений в шаблон
+	conversationHistory.Lock()
+	data := map[string]interface{}{
+		"Messages": conversationHistory.Messages,
+	}
+	conversationHistory.Unlock()
+
+	tmpl.Execute(w, data)
+}
+
+// Обработчик сброса истории
+func handleReset(w http.ResponseWriter, r *http.Request) {
+	conversationHistory.Lock()
+	conversationHistory.Messages = []Message{}
+	conversationHistory.Unlock()
+
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("История беседы сброшена"))
 }
 
 func formatLatex(text string) string {
@@ -130,15 +162,21 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Добавляем сообщение пользователя в историю
+	conversationHistory.Lock()
+	conversationHistory.Messages = append(conversationHistory.Messages, Message{
+		Role:    "user",
+		Content: userMessage,
+	})
+
+	// Создаем копию сообщений для запроса
+	messagesCopy := make([]Message, len(conversationHistory.Messages))
+	copy(messagesCopy, conversationHistory.Messages)
+	conversationHistory.Unlock()
+
 	reqBody := DeepseekRequest{
-		//Model: "google/gemini-2.0-pro-exp-02-05:free",
-		Model: "deepseek/deepseek-r1-zero:free",
-		Messages: []Message{
-			{
-				Role:    "user",
-				Content: userMessage,
-			},
-		},
+		Model:       "google/gemini-2.0-flash-lite-preview-02-05:free",
+		Messages:    messagesCopy,
 		Temperature: 1,
 	}
 	reqBody.ResponseFormat.Type = "text"
@@ -182,6 +220,15 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 
 	if len(deepseekResp.Choices) > 0 {
 		formattedText := formatLatex(deepseekResp.Choices[0].Message.Content)
+
+		// Добавляем ответ ассистента в историю
+		conversationHistory.Lock()
+		conversationHistory.Messages = append(conversationHistory.Messages, Message{
+			Role:    "assistant",
+			Content: deepseekResp.Choices[0].Message.Content,
+		})
+		conversationHistory.Unlock()
+
 		w.Write([]byte(formattedText))
 	} else {
 		http.Error(w, "Пустой ответ от API", http.StatusInternalServerError)

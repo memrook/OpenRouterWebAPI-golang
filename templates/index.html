@@ -24,6 +24,24 @@
             padding: 20px;
             box-shadow: 0 2px 4px rgba(0,0,0,0.1);
         }
+        .header-container {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        .reset-button {
+            padding: 8px 15px;
+            background-color: #dc3545;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        .reset-button:hover {
+            background-color: #c82333;
+        }
         .input-container {
             display: flex;
             gap: 10px;
@@ -73,47 +91,81 @@
             box-shadow: 0 1px 3px rgba(0,0,0,0.1);
             overflow-x: auto;
         }
+        /* Стили для истории сообщений */
+        .conversation-history {
+            margin-bottom: 20px;
+            max-height: 500px;
+            overflow-y: auto;
+            border: 1px solid #eee;
+            border-radius: 5px;
+            padding: 10px;
+        }
+        .message {
+            margin-bottom: 15px;
+            padding: 10px;
+            border-radius: 5px;
+        }
+        .message-user {
+            background-color: #e9f5ff;
+            margin-left: 20%;
+            border-left: 3px solid #007bff;
+        }
+        .message-assistant {
+            background-color: #f8f9fa;
+            margin-right: 20%;
+            border-left: 3px solid #28a745;
+        }
+        .message-role {
+            font-size: 12px;
+            color: #666;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        .message-content {
+            white-space: pre-wrap;
+        }
         /* Markdown стили */
-        .response h1, .response h2, .response h3, .response h4, .response h5, .response h6 {
+        .response h1, .response h2, .response h3, .response h4, .response h5, .response h6,
+        .message-content h1, .message-content h2, .message-content h3, .message-content h4, .message-content h5, .message-content h6 {
             margin-top: 1.5em;
             margin-bottom: 0.5em;
             color: #2c3e50;
         }
-        .response p {
+        .response p, .message-content p {
             margin: 1em 0;
             line-height: 1.6;
         }
-        .response ul, .response ol {
+        .response ul, .response ol, .message-content ul, .message-content ol {
             margin: 1em 0;
             padding-left: 2em;
         }
-        .response blockquote {
+        .response blockquote, .message-content blockquote {
             margin: 1em 0;
             padding-left: 1em;
             border-left: 4px solid #007bff;
             color: #666;
         }
-        .response a {
+        .response a, .message-content a {
             color: #007bff;
             text-decoration: none;
         }
-        .response a:hover {
+        .response a:hover, .message-content a:hover {
             text-decoration: underline;
         }
-        .response table {
+        .response table, .message-content table {
             border-collapse: collapse;
             margin: 1em 0;
             width: 100%;
         }
-        .response th, .response td {
+        .response th, .response td, .message-content th, .message-content td {
             border: 1px solid #ddd;
             padding: 8px;
             text-align: left;
         }
-        .response th {
+        .response th, .message-content th {
             background-color: #f8f9fa;
         }
-        .response img {
+        .response img, .message-content img {
             max-width: 100%;
             height: auto;
         }
@@ -204,7 +256,7 @@
             padding: 0 5px;
         }
         /* Стили для блоков кода */
-        .code-block {
+        .code-block, pre {
             margin: 15px 0;
             padding: 15px;
             background-color: #282c34;
@@ -214,13 +266,14 @@
             line-height: 1.4;
             overflow-x: auto;
         }
-        .code-block code {
+        .code-block code, pre code {
             padding: 0;
             background: none;
             white-space: pre;
+            color: #f8f8f2;
         }
         /* Стили для inline кода */
-        code:not(.code-block code) {
+        code:not(.code-block code):not(pre code) {
             background-color: #f3f4f5;
             padding: 2px 4px;
             border-radius: 3px;
@@ -269,11 +322,40 @@
             font-size: 12px;
             color: #666;
         }
+        
+        .context-info {
+            font-size: 12px;
+            color: #666;
+            margin-top: 5px;
+            text-align: right;
+        }
     </style>
 </head>
 <body>
     <div class="chat-container">
-        <h1>Deepseek Chat</h1>
+        <div class="header-container">
+            <h1>Deepseek Chat</h1>
+            <button class="reset-button" 
+                    hx-post="/reset" 
+                    hx-confirm="Вы уверены, что хотите сбросить всю историю беседы?"
+                    hx-target="#conversation-history"
+                    hx-swap="innerHTML">Сбросить историю</button>
+        </div>
+        
+        <!-- История сообщений -->
+        <div id="conversation-history" class="conversation-history">
+            {{if .Messages}}
+                {{range .Messages}}
+                    <div class="message {{if eq .Role "user"}}message-user{{else}}message-assistant{{end}}">
+                        <div class="message-role">{{if eq .Role "user"}}Вы{{else}}Deepseek{{end}}</div>
+                        <div class="message-content">{{.Content}}</div>
+                    </div>
+                {{end}}
+            {{else}}
+                <div class="context-info">История беседы пуста</div>
+            {{end}}
+        </div>
+        
         <form hx-post="/chat" 
               hx-target="#response" 
               hx-swap="innerHTML"
@@ -296,6 +378,9 @@
         </form>
         <div id="response" class="response"></div>
         <div id="status" class="status-indicator"></div>
+        <div class="context-info">
+            <span id="context-size">Сообщений в истории: {{len .Messages}}</span>
+        </div>
     </div>
 
     <script>
@@ -315,6 +400,32 @@
 
         let startTime = null;
         let timerInterval = null;
+
+        // Форматируем содержимое сообщений при загрузке страницы
+        document.addEventListener('DOMContentLoaded', function() {
+            // Форматируем все сообщения в истории
+            document.querySelectorAll('.message-content').forEach(function(element) {
+                const rawText = element.textContent;
+                element.innerHTML = marked.parse(rawText);
+                
+                // Подсвечиваем код
+                element.querySelectorAll('pre code').forEach((block) => {
+                    hljs.highlightElement(block);
+                });
+            });
+            
+            // Подсвечиваем математические формулы
+            if (window.MathJax) {
+                MathJax.typesetPromise(document.querySelectorAll('.message-content'))
+                    .catch((err) => console.log('MathJax error:', err));
+            }
+            
+            // Прокручиваем к последнему сообщению
+            const historyDiv = document.querySelector('.conversation-history');
+            if (historyDiv) {
+                historyDiv.scrollTop = historyDiv.scrollHeight;
+            }
+        });
 
         function updateResponseTime() {
             if (startTime) {
@@ -428,6 +539,11 @@
                 
                 statusDiv.className = 'status-indicator status-success';
                 statusDiv.textContent = 'Ответ успешно получен';
+                
+                // Обновляем историю беседы
+                setTimeout(() => {
+                    window.location.reload();
+                }, 1000);
             }
             
             statusDiv.style.display = 'block';
