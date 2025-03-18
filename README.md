@@ -14,6 +14,8 @@
 - ⏱️ Отображение времени генерации ответа
 - ❌ Возможность отмены генерации в потоковом режиме
 
+<img width="960" alt="изображение" src="https://github.com/user-attachments/assets/70b7f8a7-a3de-49c2-a27a-733029791c2c" />
+
 ## Поддерживаемые модели
 
 - Google: Gemini Flash Lite 2.0 Preview
